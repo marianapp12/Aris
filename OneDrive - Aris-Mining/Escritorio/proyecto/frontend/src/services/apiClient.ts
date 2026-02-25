@@ -47,4 +47,18 @@ export const getNextAvailableUsername = async (params: {
   return response.data;
 };
 
+export const uploadBulkUsers = async (file: File): Promise<any> => {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const response = await apiClient.post('/users/operational/bulk', formData, {
+    headers: {
+      // Deja que el navegador establezca el boundary correcto
+      'Content-Type': 'multipart/form-data',
+    },
+  });
+
+  return response.data;
+};
+
 export default apiClient;

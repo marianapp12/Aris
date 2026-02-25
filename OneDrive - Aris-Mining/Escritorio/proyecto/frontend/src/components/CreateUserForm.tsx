@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { UserFormData, UserPreview } from '../types/user';
-import { createOperationalUser, getNextAvailableUsername } from '../services/apiClient';
+import { createOperationalUser, getNextAvailableUsername, uploadBulkUsers } from '../services/apiClient';
 import { generateUserName, generateDisplayName } from '../utils/userNameGenerator';
 import './CreateUserForm.css';
 
@@ -38,6 +38,13 @@ const CreateUserForm = () => {
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [nextUserName, setNextUserName] = useState<string | null>(null);
+  const [bulkFile, setBulkFile] = useState<File | null>(null);
+  const [bulkStatus, setBulkStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
+  const [bulkMessage, setBulkMessage] = useState<string>('');
+  const [bulkResults, setBulkResults] = useState<
+    { row: number; status: string; userPrincipalName?: string; displayName?: string; message?: string }[]
+    | null
+  >(null);
 
   const userPreview = useMemo<UserPreview | null>(() => {
     const rawPrimerNombre = formData.primerNombre.trim();
@@ -171,6 +178,45 @@ const CreateUserForm = () => {
     }
   };
 
+  const handleBulkFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] || null;
+    setBulkFile(file);
+    setBulkMessage('');
+    setBulkStatus('idle');
+  };
+
+  const handleBulkUpload = async () => {
+    if (!bulkFile) {
+      setBulkMessage('Por favor selecciona un archivo de Excel.');
+      setBulkStatus('error');
+      return;
+    }
+
+    try {
+      setBulkStatus('loading');
+      setBulkMessage('');
+      setBulkResults(null);
+
+      const result = await uploadBulkUsers(bulkFile);
+
+      const resultsArray = Array.isArray(result.results) ? result.results : [];
+      const successCount = resultsArray.filter((r: any) => r.status === 'success').length;
+      const errorCount = resultsArray.filter((r: any) => r.status === 'error').length;
+
+      setBulkStatus('done');
+      setBulkMessage(
+        `Carga completada: ${successCount} usuarios creados, ${errorCount} con error.`
+      );
+      setBulkResults(resultsArray);
+    } catch (err) {
+      setBulkStatus('error');
+      setBulkMessage(
+        err instanceof Error ? err.message : 'Error al cargar el archivo de usuarios.'
+      );
+      setBulkResults(null);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!validateForm()) return;
@@ -234,6 +280,7 @@ const CreateUserForm = () => {
     setStatus('idle');
     setErrorMessage('');
     setNextUserName(null);
+    setBulkResults(null);
     setFormData({
       primerNombre: '',
       segundoNombre: '',
@@ -244,6 +291,78 @@ const CreateUserForm = () => {
     });
   };
 
+  // Vista de éxito para carga masiva de usuarios
+  if (bulkResults && bulkResults.some((r) => r.status === 'success')) {
+    const created = bulkResults.filter((r) => r.status === 'success');
+    const failed = bulkResults.filter((r) => r.status === 'error');
+
+    return (
+      <div className="success-wrapper">
+        <div className="success-card">
+          <div className="success-icon">✓</div>
+
+          <h2 className="success-title">
+            Usuarios creados exitosamente
+          </h2>
+
+          <p className="success-subtitle">
+            Se han creado {created.length} usuarios en Microsoft 365.
+          </p>
+
+          <div className="success-table">
+            {created.map((u, index) => (
+              <div className="success-row" key={`success-${index}`}>
+                <span className="success-label">
+                  USUARIO {index + 1}
+                </span>
+                <span className="success-value">
+                  {u.displayName} — {u.userPrincipalName}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {failed.length > 0 && (
+            <>
+              <h3 className="success-subtitle">
+                Registros con error ({failed.length})
+              </h3>
+              <div className="success-table">
+                {failed.map((u, index) => (
+                  <div className="success-row" key={`error-${index}`}>
+                    <span className="success-label">
+                      FILA {u.row}
+                    </span>
+                    <span className="success-value">
+                      {u.message || 'Error al crear el usuario.'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          <div className="success-note">
+            🔑 <strong>Contraseña inicial:</strong> Aris1234* — Los usuarios deberán cambiarla al iniciar sesión.
+          </div>
+
+          <button
+            className="primary-btn"
+            onClick={() => {
+              setBulkResults(null);
+              setBulkFile(null);
+              setBulkStatus('idle');
+              setBulkMessage('');
+            }}
+          >
+            Volver al formulario
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Vista de éxito para creación individual
   if (status === 'success' && createdUser) {
     return (
       <div className="success-wrapper">
@@ -380,6 +499,39 @@ const CreateUserForm = () => {
             <div className="preview-box">{nextUserName ?? userPreview?.userName ?? '—'}</div>
           </div>
         </div>
+      </section>
+
+      <section className="dark-section">
+        <h3 className="section-title">CARGA MASIVA DESDE EXCEL</h3>
+
+        <div className="field-group">
+          <label>ARCHIVO DE EXCEL</label>
+          <input
+            type="file"
+            accept=".xlsx,.xls"
+            onChange={handleBulkFileChange}
+          />
+          <p className="note">
+            La plantilla debe tener la fila 1 con el título ARIS MINING y la fila 2 con estos
+            encabezados: PrimerNombre, SegundoNombre, PrimerApellido, SegundoApellido, Puesto,
+            Departamento.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          className="primary-btn"
+          disabled={bulkStatus === 'loading'}
+          onClick={handleBulkUpload}
+        >
+          {bulkStatus === 'loading' ? 'Cargando usuarios…' : 'Cargar usuarios desde Excel'}
+        </button>
+
+        {bulkMessage && (
+          <p className={bulkStatus === 'error' ? 'error-text' : 'note'}>
+            {bulkMessage}
+          </p>
+        )}
       </section>
 
       <button className="primary-btn" disabled={status === 'loading'}>

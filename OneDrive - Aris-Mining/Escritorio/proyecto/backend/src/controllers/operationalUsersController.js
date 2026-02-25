@@ -1,4 +1,18 @@
 import { createUserInMicrosoft365, getNextAvailableUsername } from '../services/graphUserService.js';
+import XLSX from 'xlsx';
+
+/** Convierte a formato "Primera Letra Mayúscula" por palabra */
+const toTitleCase = (value) =>
+  value
+    .toLowerCase()
+    .split(' ')
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+
+/** Solo letras (incluye acentos, ñ, ü, espacios, guiones) para nombres y apellidos */
+const onlyLettersRegex = /[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s-]/;
+const hasInvalidCharsForName = (value) => value && onlyLettersRegex.test(value);
 
 /**
  * Controlador para crear un usuario operativo
@@ -89,7 +103,7 @@ export const createOperationalUser = async (req, res, next) => {
 };
 
 /**
- * GET /api/users/operational/next-username
+ * GET /api/users/next-username
  * Devuelve el siguiente nombre de usuario disponible (sin crear el usuario).
  * Query: givenName, surname1, surname2 (opcional)
  */
@@ -119,6 +133,177 @@ export const getNextUsername = async (req, res) => {
     res.status(500).json({
       error: 'Error interno',
       message: error.message || 'No se pudo obtener el nombre de usuario disponible',
+    });
+  }
+};
+
+/**
+ * POST /api/users/operational/bulk
+ * Carga masiva de usuarios desde un archivo de Excel.
+ * El archivo debe tener:
+ *  - Fila 1: título (ej. "ARIS MINING") – se ignora
+ *  - Fila 2: encabezados exactos:
+ *      PrimerNombre | SegundoNombre | PrimerApellido | SegundoApellido | Puesto | Departamento
+ *  - Fila 3+: datos
+ */
+export const createOperationalUsersBulk = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        error: 'Archivo faltante',
+        message: 'Debe adjuntar un archivo Excel en el campo "file".',
+      });
+    }
+
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+
+    if (!sheet) {
+      return res.status(400).json({
+        error: 'Archivo inválido',
+        message: 'El archivo Excel no contiene hojas.',
+      });
+    }
+
+    // range: 1 → ignora la primera fila (título) y usa la segunda como encabezados
+    const rows = XLSX.utils.sheet_to_json(sheet, { range: 1 });
+
+    if (!rows.length) {
+      return res.status(400).json({
+        error: 'Sin datos',
+        message: 'El archivo no contiene filas de datos.',
+      });
+    }
+
+    const results = [];
+
+    for (let index = 0; index < rows.length; index++) {
+      const row = rows[index];
+      const rowNumber = index + 3; // datos comienzan en la fila 3
+
+      const primerNombre = (row.PrimerNombre || '').toString().trim();
+      const segundoNombre = (row.SegundoNombre || '').toString().trim();
+      const primerApellido = (row.PrimerApellido || '').toString().trim();
+      const segundoApellido = (row.SegundoApellido || '').toString().trim();
+      const puesto = (row.Puesto || '').toString().trim();
+      const departamento = (row.Departamento || '').toString().trim();
+
+      // Validación mínima por fila
+      if (!primerNombre || !primerApellido || !puesto || !departamento) {
+        results.push({
+          row: rowNumber,
+          status: 'error',
+          message:
+            'Faltan campos obligatorios (PrimerNombre, PrimerApellido, Puesto, Departamento).',
+        });
+        continue;
+      }
+
+      if (primerNombre.length < 3 || primerApellido.length < 3) {
+        results.push({
+          row: rowNumber,
+          status: 'error',
+          message: 'PrimerNombre y PrimerApellido deben tener al menos 3 caracteres.',
+        });
+        continue;
+      }
+
+      const maxLength = 50;
+      if (
+        primerNombre.length > maxLength ||
+        primerApellido.length > maxLength ||
+        (segundoNombre && segundoNombre.length > maxLength) ||
+        (segundoApellido && segundoApellido.length > maxLength) ||
+        puesto.length > maxLength ||
+        departamento.length > maxLength
+      ) {
+        results.push({
+          row: rowNumber,
+          status: 'error',
+          message: `Los campos no pueden exceder ${maxLength} caracteres.`,
+        });
+        continue;
+      }
+
+      // Validación: solo letras en nombres y apellidos (igual que formulario individual)
+      if (hasInvalidCharsForName(primerNombre)) {
+        results.push({
+          row: rowNumber,
+          status: 'error',
+          message: 'PrimerNombre: solo se permiten letras.',
+        });
+        continue;
+      }
+      if (segundoNombre && hasInvalidCharsForName(segundoNombre)) {
+        results.push({
+          row: rowNumber,
+          status: 'error',
+          message: 'SegundoNombre: solo se permiten letras.',
+        });
+        continue;
+      }
+      if (hasInvalidCharsForName(primerApellido)) {
+        results.push({
+          row: rowNumber,
+          status: 'error',
+          message: 'PrimerApellido: solo se permiten letras.',
+        });
+        continue;
+      }
+      if (segundoApellido && hasInvalidCharsForName(segundoApellido)) {
+        results.push({
+          row: rowNumber,
+          status: 'error',
+          message: 'SegundoApellido: solo se permiten letras.',
+        });
+        continue;
+      }
+
+      // Normalización igual que formulario individual: Title Case nombres/apellidos, MAYÚSCULAS puesto/departamento
+      const primerNombreNorm = toTitleCase(primerNombre);
+      const segundoNombreNorm = segundoNombre ? toTitleCase(segundoNombre) : '';
+      const primerApellidoNorm = toTitleCase(primerApellido);
+      const segundoApellidoNorm = segundoApellido ? toTitleCase(segundoApellido) : '';
+      const puestoNorm = puesto.toUpperCase();
+      const departamentoNorm = departamento.toUpperCase();
+
+      const givenName = [primerNombreNorm, segundoNombreNorm].filter(Boolean).join(' ');
+
+      try {
+        const created = await createUserInMicrosoft365({
+          givenName,
+          surname1: primerApellidoNorm,
+          surname2: segundoApellidoNorm || undefined,
+          jobTitle: puestoNorm,
+          department: departamentoNorm,
+        });
+
+        results.push({
+          row: rowNumber,
+          status: 'success',
+          id: created.id,
+          userPrincipalName: created.userPrincipalName,
+          displayName: created.displayName,
+        });
+      } catch (error) {
+        results.push({
+          row: rowNumber,
+          status: 'error',
+          message: error.message || 'Error al crear el usuario en Microsoft 365.',
+        });
+      }
+    }
+
+    res.status(201).json({
+      message: 'Procesamiento masivo completado.',
+      results,
+    });
+  } catch (error) {
+    console.error('Error en carga masiva de usuarios:', error);
+    res.status(500).json({
+      error: 'Error interno',
+      message: error.message || 'Error al procesar el archivo de usuarios.',
     });
   }
 };
