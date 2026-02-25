@@ -1,4 +1,4 @@
-import { createUserInMicrosoft365 } from '../services/graphUserService.js';
+import { createUserInMicrosoft365, getNextAvailableUsername } from '../services/graphUserService.js';
 
 /**
  * Controlador para crear un usuario operativo
@@ -84,6 +84,41 @@ export const createOperationalUser = async (req, res, next) => {
     res.status(500).json({
       error: 'Error interno',
       message: error.message || 'Error al crear el usuario en Microsoft 365',
+    });
+  }
+};
+
+/**
+ * GET /api/users/operational/next-username
+ * Devuelve el siguiente nombre de usuario disponible (sin crear el usuario).
+ * Query: givenName, surname1, surname2 (opcional)
+ */
+export const getNextUsername = async (req, res) => {
+  try {
+    const givenName = req.query.givenName?.trim() || '';
+    const surname1 = req.query.surname1?.trim() || '';
+    const surname2 = req.query.surname2?.trim() || '';
+
+    if (!givenName || !surname1 || givenName.length < 3 || surname1.length < 3) {
+      return res.status(400).json({
+        error: 'Datos insuficientes',
+        message: 'Se requieren givenName y surname1 con al menos 3 caracteres',
+      });
+    }
+
+    const result = await getNextAvailableUsername({ givenName, surname1, surname2 });
+    res.json(result);
+  } catch (error) {
+    console.error('Error al obtener siguiente usuario:', error);
+    if (error.statusCode === 401 || error.statusCode === 403) {
+      return res.status(500).json({
+        error: 'Error de autenticación',
+        message: 'Error al conectar con Microsoft 365.',
+      });
+    }
+    res.status(500).json({
+      error: 'Error interno',
+      message: error.message || 'No se pudo obtener el nombre de usuario disponible',
     });
   }
 };
