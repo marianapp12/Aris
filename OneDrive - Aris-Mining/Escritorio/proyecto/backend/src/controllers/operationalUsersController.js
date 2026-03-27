@@ -1,6 +1,8 @@
 import { createUserInMicrosoft365, getNextAvailableUsername } from '../services/graphUserService.js';
 import XLSX from 'xlsx';
 
+/** Controladoe de node.js creacion de usuarios en microsoft 365 */
+
 /** Convierte a formato "Primera Letra Mayúscula" por palabra */
 const toTitleCase = (value) =>
   value
@@ -29,7 +31,7 @@ export const createOperationalUser = async (req, res, next) => {
       });
     }
 
-    // Validación de longitud mínima
+    // Validación de longitud mínima colocar mas
     if (givenName.trim().length < 3 || surname1.trim().length < 3) {
       return res.status(400).json({
         error: 'Validación fallida',
@@ -76,7 +78,7 @@ export const createOperationalUser = async (req, res, next) => {
     if (error.statusCode === 409) {
       return res.status(409).json({
         error: 'Usuario ya existe',
-        message: 'Ya existe un usuario con ese nombre de usuario en Microsoft 365',
+        message: 'Ya existe un usuario con ese nombre en Microsoft 365',
       });
     }
 
@@ -116,7 +118,7 @@ export const getNextUsername = async (req, res) => {
     if (!givenName || !surname1 || givenName.length < 3 || surname1.length < 3) {
       return res.status(400).json({
         error: 'Datos insuficientes',
-        message: 'Se requieren givenName y surname1 con al menos 3 caracteres',
+        message: 'Se requieren primerNombre y primerApellido con al menos 3 caracteres',
       });
     }
 

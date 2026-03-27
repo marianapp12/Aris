@@ -24,20 +24,16 @@
 /* ── Reset ─────────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-body {
-  font-family: 'Barlow', sans-serif;
-  background: var(--navy);
-  color: var(--text);
-  min-height: 100vh;
-  line-height: 1.6;
-  -webkit-font-smoothing: antialiased;
-}
-
 /* ── Layout ────────────────────────────────────────────────────────────── */
 .app {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+  font-family: 'Barlow', sans-serif;
+  background: var(--navy);
+  color: var(--text);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
 }
 
 /* ── Header ────────────────────────────────────────────────────────────── */

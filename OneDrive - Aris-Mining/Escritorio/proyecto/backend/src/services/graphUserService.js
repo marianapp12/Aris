@@ -1,6 +1,6 @@
 import { getGraphClient } from '../config/graphClient.js';
 
-const DOMAIN = 'mariana28napgmail.onmicrosoft.com';
+const DOMAIN = 'realizandoprueba123hotmail.onmicrosoft.com';
 const INITIAL_PASSWORD = 'Aris1234*';
 
 /**q

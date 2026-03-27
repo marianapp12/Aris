@@ -4,7 +4,7 @@ import { createOperationalUser, getNextAvailableUsername, uploadBulkUsers } from
 import { generateUserName, generateDisplayName } from '../utils/userNameGenerator';
 import './CreateUserForm.css';
 
-const DOMAIN = '@mariana28napgmail.onmicrosoft.com';
+const DOMAIN = '@realizandoprueba123hotmail.onmicrosoft.com';
 
 const toTitleCase = (value: string): string =>
   value
