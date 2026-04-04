@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import operationalUsersRoutes from './routes/operationalUsers.js';
+import administrativeUsersRoutes from './routes/administrativeUsers.js';
 
 // Cargar variables de entorno
 dotenv.config();
@@ -18,8 +19,10 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'Servidor funcionando correctamente' });
 });
 
+// API REST: todos los endpoints de usuarios bajo /api/users (p. ej. POST /api/users/operational).
 // Rutas
 app.use('/api/users', operationalUsersRoutes);
+app.use('/api/users', administrativeUsersRoutes);
 
 // Manejo de errores
 app.use((err, req, res, next) => {

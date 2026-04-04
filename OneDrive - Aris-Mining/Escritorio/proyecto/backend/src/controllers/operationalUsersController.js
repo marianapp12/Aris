@@ -1,4 +1,5 @@
 import { createUserInMicrosoft365, getNextAvailableUsername } from '../services/graphUserService.js';
+import { logGraphApiError } from '../utils/graphApiErrors.js';
 import XLSX from 'xlsx';
 
 /** Controladoe de node.js creacion de usuarios en microsoft 365 */
@@ -72,7 +73,7 @@ export const createOperationalUser = async (req, res, next) => {
       message: 'Usuario creado exitosamente en Microsoft 365',
     });
   } catch (error) {
-    console.error('Error al crear usuario operativo:', error);
+    logGraphApiError('crear usuario operativo', error);
 
     // Manejo de errores específicos de Microsoft Graph
     if (error.statusCode === 409) {
@@ -125,7 +126,7 @@ export const getNextUsername = async (req, res) => {
     const result = await getNextAvailableUsername({ givenName, surname1, surname2 });
     res.json(result);
   } catch (error) {
-    console.error('Error al obtener siguiente usuario:', error);
+    logGraphApiError('next-username operativo', error);
     if (error.statusCode === 401 || error.statusCode === 403) {
       return res.status(500).json({
         error: 'Error de autenticación',
@@ -289,6 +290,7 @@ export const createOperationalUsersBulk = async (req, res) => {
           displayName: created.displayName,
         });
       } catch (error) {
+        logGraphApiError(`crear usuario operativo masivo fila ${rowNumber}`, error);
         results.push({
           row: rowNumber,
           status: 'error',
@@ -302,7 +304,7 @@ export const createOperationalUsersBulk = async (req, res) => {
       results,
     });
   } catch (error) {
-    console.error('Error en carga masiva de usuarios:', error);
+    logGraphApiError('carga masiva operativos', error);
     res.status(500).json({
       error: 'Error interno',
       message: error.message || 'Error al procesar el archivo de usuarios.',

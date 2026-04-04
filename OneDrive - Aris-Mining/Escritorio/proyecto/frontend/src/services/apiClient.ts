@@ -1,7 +1,41 @@
 import axios from 'axios';
-import { CreateUserRequest, CreateUserResponse, NextUsernameResponse } from '../types/user';
+import {
+  CreateUserRequest,
+  CreateUserResponse,
+  NextUsernameResponse,
+  AdministrativeCreationAccepted,
+  AdministrativeJobStatus,
+} from '../types/user';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+/**
+ * El backend monta las rutas bajo `/api` (p. ej. `/api/users/...`).
+ * Si `VITE_API_BASE_URL` es solo el origen (`http://localhost:5000`), se añade `/api`
+ * para evitar 404. No modifica URLs con path explícito (p. ej. `https://host/v1`).
+ */
+function resolveApiBaseUrl(raw: string | undefined): string {
+  const fallback = '/api';
+  if (!raw?.trim()) return fallback;
+  const trimmed = raw.trim().replace(/\/+$/, '');
+  if (trimmed.endsWith('/api')) return trimmed;
+
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    try {
+      const u = new URL(trimmed);
+      if (!u.pathname || u.pathname === '/') {
+        return `${u.origin}/api`;
+      }
+      return trimmed;
+    } catch {
+      return fallback;
+    }
+  }
+
+  if (trimmed.startsWith('/')) return trimmed;
+
+  return fallback;
+}
+
+const API_BASE_URL = resolveApiBaseUrl(import.meta.env.VITE_API_BASE_URL);
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -29,6 +63,62 @@ export const createOperationalUser = async (
     }
     throw error;
   }
+};
+
+export const createAdministrativeUser = async (
+  payload: CreateUserRequest
+): Promise<AdministrativeCreationAccepted> => {
+  try {
+    const response = await apiClient.post<AdministrativeCreationAccepted>(
+      '/users/administrative',
+      payload,
+      { validateStatus: () => true }
+    );
+    if (response.status === 202) {
+      return response.data;
+    }
+    const data = response.data as { message?: string; error?: string };
+    const message =
+      data?.message || data?.error || `Error al crear el usuario administrativo (${response.status})`;
+    throw new Error(message);
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      if (error.response) {
+        const message =
+          error.response.data?.message ||
+          error.response.data?.error ||
+          'Error al crear el usuario administrativo';
+        throw new Error(message);
+      }
+      throw new Error('Error de conexión con el servidor');
+    }
+    throw error;
+  }
+};
+
+export const getAdministrativeJobStatus = async (
+  jobId: string
+): Promise<AdministrativeJobStatus> => {
+  const response = await apiClient.get<AdministrativeJobStatus>(
+    `/users/administrative/jobs/${jobId}`
+  );
+  return response.data;
+};
+
+export const getNextAdministrativeUsername = async (params: {
+  givenName: string;
+  surname1: string;
+  surname2?: string;
+}): Promise<NextUsernameResponse> => {
+  const searchParams = new URLSearchParams({
+    givenName: params.givenName,
+    surname1: params.surname1,
+  });
+  if (params.surname2) searchParams.set('surname2', params.surname2);
+  const response = await apiClient.get<NextUsernameResponse>(
+    `/users/administrative/next-username?${searchParams.toString()}`
+  );
+  return response.data;
 };
 
 export const getNextAvailableUsername = async (params: {

@@ -186,3 +186,41 @@
   font-size: 13px;
   color: #cbd5f5;
 }
+
+.success-value.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  text-align: left;
+}
+
+.user-type-tabs {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.user-type-tab {
+  flex: 1;
+  min-width: 200px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  border: 1px solid #1e293b;
+  background: #020617;
+  color: #94a3b8;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.user-type-tab:hover {
+  border-color: #334155;
+  color: #e5e7eb;
+}
+
+.user-type-tab.active {
+  border-color: #facc15;
+  color: #facc15;
+  background: #111827;
+}
