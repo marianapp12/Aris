@@ -1,106 +1,37 @@
+import XLSX from 'xlsx';
+import { validateAdministrativePayload } from '../utils/administrativeUserValidation.js';
+import { getAdQueueConfig } from '../config/adQueueConfig.js';
+import { getGraphClient } from '../config/graphClient.js';
 import {
-  enqueueAdministrativeUserCreation,
-  getAdministrativeJobStatus,
-  getNextAvailableAdministrativeUsernamePs,
-} from '../services/adPowerShellUserService.js';
+  enqueueAdUserRequest,
+  proposeAdministrativeUsername,
+} from '../services/adQueueUserService.js';
+import {
+  AdministrativePrecheckError,
+  pickAvailableSamAndUpn,
+} from '../services/graphAdministrativePrecheck.js';
+
+const toTitleCase = (value) =>
+  value
+    .toLowerCase()
+    .split(' ')
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
 
 const onlyLettersRegex = /[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s-]/;
 const hasInvalidCharsForName = (value) => value && onlyLettersRegex.test(value);
-const employeeIdRegex = /^[0-9A-Za-z-]{0,32}$/;
-const cityRegex = /^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ0-9\s.,-]{0,60}$/;
 
-function validateAdministrativePayload(body) {
-  const { givenName, surname1, surname2, jobTitle, department, employeeId, city } = body;
-
-  if (!givenName || !surname1 || !jobTitle || !department) {
-    return {
-      ok: false,
-      status: 400,
-      error: 'Campos obligatorios faltantes',
-      message:
-        'Los campos nombre, primer apellido, puesto y departamento son obligatorios',
-    };
-  }
-
-  if (givenName.trim().length < 3 || surname1.trim().length < 3) {
-    return {
-      ok: false,
-      status: 400,
-      error: 'Validación fallida',
-      message: 'El nombre y primer apellido deben tener al menos 3 caracteres',
-    };
-  }
-
-  const maxLength = 50;
-  if (
-    givenName.trim().length > maxLength ||
-    surname1.trim().length > maxLength ||
-    (surname2 && surname2.trim().length > maxLength) ||
-    jobTitle.trim().length > maxLength ||
-    department.trim().length > maxLength
-  ) {
-    return {
-      ok: false,
-      status: 400,
-      error: 'Validación fallida',
-      message: `Los campos no pueden exceder ${maxLength} caracteres`,
-    };
-  }
-
-  if (
-    hasInvalidCharsForName(givenName) ||
-    hasInvalidCharsForName(surname1) ||
-    hasInvalidCharsForName(surname2)
-  ) {
-    return {
-      ok: false,
-      status: 400,
-      error: 'Validación fallida',
-      message: 'Los nombres y apellidos solo pueden contener letras',
-    };
-  }
-
-  if (employeeId != null && String(employeeId).trim() !== '') {
-    if (!employeeIdRegex.test(String(employeeId).trim())) {
-      return {
-        ok: false,
-        status: 400,
-        error: 'Validación fallida',
-        message: 'La cédula / ID debe ser alfanumérica (máx. 32 caracteres)',
-      };
-    }
-  }
-
-  if (city != null && String(city).trim() !== '') {
-    const c = String(city).trim();
-    if (c.length > 60) {
-      return {
-        ok: false,
-        status: 400,
-        error: 'Validación fallida',
-        message: 'Ciudad no puede exceder 60 caracteres',
-      };
-    }
-    if (!cityRegex.test(c)) {
-      return {
-        ok: false,
-        status: 400,
-        error: 'Validación fallida',
-        message: 'Ciudad con caracteres no permitidos',
-      };
-    }
-  }
-
-  return { ok: true };
+function readCedulaFromRow(row) {
+  if (row.Cedula != null && String(row.Cedula).trim() !== '') return String(row.Cedula).trim();
+  if (row['Cédula'] != null && String(row['Cédula']).trim() !== '') return String(row['Cédula']).trim();
+  return '';
 }
 
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
 /**
- * POST /api/users/administrative — 202 Accepted + jobId
+ * POST /api/users y POST /api/users/administrative — 202 Accepted + requestId (cola SMB)
  */
-export const createAdministrativeUser = async (req, res) => {
+export const createUserViaAdQueue = async (req, res) => {
   const validation = validateAdministrativePayload(req.body);
   if (!validation.ok) {
     return res.status(validation.status).json({
@@ -109,59 +40,53 @@ export const createAdministrativeUser = async (req, res) => {
     });
   }
 
-  const { givenName, surname1, surname2, jobTitle, department, employeeId, city } = req.body;
-
   try {
-    const jobId = enqueueAdministrativeUserCreation({
-      givenName: givenName.trim(),
-      surname1: surname1.trim(),
-      surname2: surname2?.trim(),
-      jobTitle: jobTitle.trim(),
-      department: department.trim(),
-      employeeId: employeeId?.trim(),
-      city: city?.trim(),
-    });
+    const result = await enqueueAdUserRequest(req.body);
 
     return res.status(202).json({
-      jobId,
-      statusUrl: `/api/users/administrative/jobs/${jobId}`,
+      requestId: result.requestId,
       message:
-        'Creación encolada. Consulte el estado del trabajo; puede tardar varios minutos (sincronización / replicación).',
+        'Solicitud encolada. El usuario se creará en Active Directory cuando el servidor procese el archivo; puede tardar varios minutos (sincronización con Microsoft 365 vía Azure AD Connect).',
+      queuePath: result.queuePath,
+      proposedUserName: result.samAccountName,
+      userPrincipalName: result.userPrincipalName,
+      displayName: result.displayName,
     });
   } catch (error) {
+    if (error instanceof AdministrativePrecheckError) {
+      return res.status(error.httpStatus).json({
+        error:
+          error.code === 'EMPLOYEE_ID_IN_USE'
+            ? 'Cédula / ID duplicada'
+            : error.code === 'NO_UPN_AVAILABLE'
+              ? 'Sin nombre de usuario disponible'
+              : 'Prechequeo Microsoft Graph',
+        message: error.message,
+        code: error.code,
+      });
+    }
+
     const msg = error?.message || String(error);
-    if (msg.includes('Falta la variable de entorno') || msg.includes('Falta AD_PS_')) {
+    if (msg.includes('Falta la variable de entorno AD_QUEUE_')) {
       return res.status(503).json({
-        error: 'Configuración PowerShell / AD incompleta',
+        error: 'Configuración de cola AD incompleta',
         message: msg,
       });
     }
-    console.error('[AD-PS] Error al encolar creación administrativa:', msg);
+    console.error('[AD-Queue] Error al encolar creación administrativa:', msg);
     return res.status(500).json({
       error: 'Error interno',
       message:
-        process.env.NODE_ENV === 'development' ? msg : 'No se pudo iniciar la creación del usuario',
+        process.env.NODE_ENV === 'development' ? msg : 'No se pudo escribir la solicitud en la cola AD',
     });
   }
 };
 
-/**
- * GET /api/users/administrative/jobs/:jobId
- */
-export const getAdministrativeUserJob = async (req, res) => {
-  const { jobId } = req.params;
-  if (!jobId || !UUID_RE.test(jobId)) {
-    return res.status(400).json({ error: 'jobId inválido' });
-  }
-  const status = getAdministrativeJobStatus(jobId);
-  if (!status) {
-    return res.status(404).json({ error: 'Trabajo no encontrado' });
-  }
-  return res.json(status);
-};
+/** Alias para compatibilidad con clientes que llaman POST /api/users/administrative */
+export const createAdministrativeUser = createUserViaAdQueue;
 
 /**
- * GET /api/users/administrative/next-username
+ * GET /api/users/administrative/next-username — candidato libre vía Graph (o primer candidato si skip prechequeo)
  */
 export const getNextAdministrativeUsername = async (req, res) => {
   try {
@@ -176,31 +101,252 @@ export const getNextAdministrativeUsername = async (req, res) => {
       });
     }
 
-    const { sAMAccountName, userPrincipalName } = await getNextAvailableAdministrativeUsernamePs({
+    const config = getAdQueueConfig();
+    if (!config.emailDomain) {
+      return res.status(503).json({
+        error: 'Configuración de cola AD incompleta',
+        message: 'Falta la variable de entorno AD_QUEUE_EMAIL_DOMAIN',
+      });
+    }
+
+    if (config.skipGraphPrecheck) {
+      const { sAMAccountName, userPrincipalName } = proposeAdministrativeUsername(
+        givenName,
+        surname1,
+        surname2 || undefined
+      );
+      return res.json({
+        userName: sAMAccountName,
+        userPrincipalName,
+      });
+    }
+
+    const graphClient = getGraphClient();
+    const picked = await pickAvailableSamAndUpn(graphClient, {
       givenName,
       surname1,
-      surname2,
+      surname2: surname2 || undefined,
+      emailDomain: config.emailDomain,
     });
 
     return res.json({
-      userName: sAMAccountName,
-      userPrincipalName,
+      userName: picked.samAccountName,
+      userPrincipalName: picked.userPrincipalName,
     });
   } catch (error) {
+    if (error instanceof AdministrativePrecheckError) {
+      return res.status(error.httpStatus).json({
+        error: 'Prechequeo Microsoft Graph',
+        message: error.message,
+        code: error.code,
+      });
+    }
+
     const msg = error?.message || String(error);
-    if (msg.includes('Falta la variable de entorno') || msg.includes('Falta AD_PS_')) {
+    if (msg.includes('Falta la variable de entorno') && msg.includes('AZURE_')) {
       return res.status(503).json({
-        error: 'Configuración PowerShell / AD incompleta',
+        error: 'Microsoft Graph no configurado',
         message: msg,
       });
     }
-    console.error('[AD-PS] next-username administrativo:', msg);
+    if (msg.includes('Falta la variable de entorno AD_QUEUE_')) {
+      return res.status(503).json({
+        error: 'Configuración de cola AD incompleta',
+        message: msg,
+      });
+    }
+    console.error('[AD-Queue] next-username administrativo:', msg);
     return res.status(500).json({
       error: 'Error interno',
       message:
         process.env.NODE_ENV === 'development'
           ? msg
           : 'No se pudo obtener el nombre de usuario sugerido',
+    });
+  }
+};
+
+/**
+ * POST /api/users/administrative/bulk
+ * Carga masiva: misma plantilla que operativos + Cedula (obligatoria) y Ciudad (opcional).
+ * Fila 1 título, fila 2 encabezados, datos desde fila 3.
+ */
+export const createAdministrativeUsersBulk = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        error: 'Archivo faltante',
+        message: 'Debe adjuntar un archivo Excel en el campo "file".',
+      });
+    }
+
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+
+    if (!sheet) {
+      return res.status(400).json({
+        error: 'Archivo inválido',
+        message: 'El archivo Excel no contiene hojas.',
+      });
+    }
+
+    const rows = XLSX.utils.sheet_to_json(sheet, { range: 1 });
+
+    if (!rows.length) {
+      return res.status(400).json({
+        error: 'Sin datos',
+        message: 'El archivo no contiene filas de datos.',
+      });
+    }
+
+    const results = [];
+    const seenEmployeeIds = new Set();
+
+    for (let index = 0; index < rows.length; index++) {
+      const row = rows[index];
+      const rowNumber = index + 3;
+
+      const primerNombre = (row.PrimerNombre || '').toString().trim();
+      const segundoNombre = (row.SegundoNombre || '').toString().trim();
+      const primerApellido = (row.PrimerApellido || '').toString().trim();
+      const segundoApellido = (row.SegundoApellido || '').toString().trim();
+      const puesto = (row.Puesto || '').toString().trim();
+      const departamento = (row.Departamento || '').toString().trim();
+      const cedulaRaw = readCedulaFromRow(row);
+      const ciudad = (row.Ciudad || '').toString().trim();
+
+      if (!primerNombre || !primerApellido || !puesto || !departamento || !cedulaRaw) {
+        results.push({
+          row: rowNumber,
+          status: 'error',
+          message:
+            'Faltan campos obligatorios (PrimerNombre, PrimerApellido, Puesto, Departamento, Cedula).',
+        });
+        continue;
+      }
+
+      if (primerNombre.length < 3 || primerApellido.length < 3) {
+        results.push({
+          row: rowNumber,
+          status: 'error',
+          message: 'PrimerNombre y PrimerApellido deben tener al menos 3 caracteres.',
+        });
+        continue;
+      }
+
+      const maxLength = 50;
+      if (
+        primerNombre.length > maxLength ||
+        primerApellido.length > maxLength ||
+        (segundoNombre && segundoNombre.length > maxLength) ||
+        (segundoApellido && segundoApellido.length > maxLength) ||
+        puesto.length > maxLength ||
+        departamento.length > maxLength
+      ) {
+        results.push({
+          row: rowNumber,
+          status: 'error',
+          message: `Los campos no pueden exceder ${maxLength} caracteres.`,
+        });
+        continue;
+      }
+
+      if (hasInvalidCharsForName(primerNombre)) {
+        results.push({ row: rowNumber, status: 'error', message: 'PrimerNombre: solo se permiten letras.' });
+        continue;
+      }
+      if (segundoNombre && hasInvalidCharsForName(segundoNombre)) {
+        results.push({ row: rowNumber, status: 'error', message: 'SegundoNombre: solo se permiten letras.' });
+        continue;
+      }
+      if (hasInvalidCharsForName(primerApellido)) {
+        results.push({ row: rowNumber, status: 'error', message: 'PrimerApellido: solo se permiten letras.' });
+        continue;
+      }
+      if (segundoApellido && hasInvalidCharsForName(segundoApellido)) {
+        results.push({ row: rowNumber, status: 'error', message: 'SegundoApellido: solo se permiten letras.' });
+        continue;
+      }
+
+      const employeeId = cedulaRaw;
+      if (seenEmployeeIds.has(employeeId)) {
+        results.push({
+          row: rowNumber,
+          status: 'error',
+          message: 'La cédula / ID está duplicada en este archivo (misma fila anterior).',
+        });
+        continue;
+      }
+      seenEmployeeIds.add(employeeId);
+
+      const primerNombreNorm = toTitleCase(primerNombre);
+      const segundoNombreNorm = segundoNombre ? toTitleCase(segundoNombre) : '';
+      const primerApellidoNorm = toTitleCase(primerApellido);
+      const segundoApellidoNorm = segundoApellido ? toTitleCase(segundoApellido) : '';
+      const puestoNorm = puesto.toUpperCase();
+      const departamentoNorm = departamento.toUpperCase();
+      const givenName = [primerNombreNorm, segundoNombreNorm].filter(Boolean).join(' ');
+
+      const body = {
+        givenName,
+        surname1: primerApellidoNorm,
+        surname2: segundoApellidoNorm || undefined,
+        jobTitle: puestoNorm,
+        department: departamentoNorm,
+        employeeId,
+        ...(ciudad ? { city: ciudad } : {}),
+      };
+
+      const validation = validateAdministrativePayload(body);
+      if (!validation.ok) {
+        results.push({
+          row: rowNumber,
+          status: 'error',
+          message: validation.message,
+        });
+        continue;
+      }
+
+      try {
+        const created = await enqueueAdUserRequest(body);
+        results.push({
+          row: rowNumber,
+          status: 'success',
+          requestId: created.requestId,
+          userPrincipalName: created.userPrincipalName,
+          displayName: created.displayName,
+          proposedUserName: created.samAccountName,
+        });
+      } catch (error) {
+        if (error instanceof AdministrativePrecheckError) {
+          results.push({
+            row: rowNumber,
+            status: 'error',
+            message: error.message,
+            code: error.code,
+          });
+          continue;
+        }
+        const msg = error?.message || String(error);
+        results.push({
+          row: rowNumber,
+          status: 'error',
+          message: msg,
+        });
+      }
+    }
+
+    return res.status(201).json({
+      message: 'Procesamiento masivo administrativo completado.',
+      results,
+    });
+  } catch (error) {
+    const msg = error?.message || String(error);
+    console.error('[AD-Queue] carga masiva administrativa:', msg);
+    return res.status(500).json({
+      error: 'Error interno',
+      message: msg || 'Error al procesar el archivo de usuarios.',
     });
   }
 };

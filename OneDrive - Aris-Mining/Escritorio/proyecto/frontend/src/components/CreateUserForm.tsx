@@ -2,11 +2,11 @@ import { useState, useMemo, useEffect } from 'react';
 import { UserFormData, UserPreview } from '../types/user';
 import {
   createOperationalUser,
-  createAdministrativeUser,
+  createUserViaAdQueue,
   getNextAvailableUsername,
   getNextAdministrativeUsername,
-  getAdministrativeJobStatus,
   uploadBulkUsers,
+  uploadAdministrativeBulkUsers,
 } from '../services/apiClient';
 import { generateUserName, generateDisplayName } from '../utils/userNameGenerator';
 import './CreateUserForm.css';
@@ -14,6 +14,10 @@ import './CreateUserForm.css';
 const DOMAIN = '@realizandoprueba123hotmail.onmicrosoft.com';
 const AD_UPN_SUFFIX =
   (import.meta.env.VITE_AD_UPN_SUFFIX as string | undefined)?.trim() || 'ad.local';
+
+/** Alineado con backend (administrativeUserValidation). */
+const EMPLOYEE_ID_MIN = 5;
+const EMPLOYEE_ID_MAX = 32;
 
 type UserCreationType = 'operational' | 'administrative';
 
@@ -30,7 +34,7 @@ type CreatedUser = {
   userName: string;
   email: string;
   id?: string;
-  distinguishedName?: string;
+  requestId?: string;
   creationType: UserCreationType;
 };
 
@@ -52,17 +56,30 @@ const CreateUserForm = () => {
   const [createdUser, setCreatedUser] = useState<CreatedUser | null>(null);
 
   const [errors, setErrors] = useState<Partial<Record<keyof UserFormData, string>>>({});
-  const [status, setStatus] = useState<
-    'idle' | 'loading' | 'processing' | 'success' | 'error'
-  >('idle');
+  const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [nextUserName, setNextUserName] = useState<string | null>(null);
-  const [adminJobId, setAdminJobId] = useState<string | null>(null);
   const [bulkFile, setBulkFile] = useState<File | null>(null);
   const [bulkStatus, setBulkStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
   const [bulkMessage, setBulkMessage] = useState<string>('');
   const [bulkResults, setBulkResults] = useState<
     { row: number; status: string; userPrincipalName?: string; displayName?: string; message?: string }[]
+    | null
+  >(null);
+
+  const [bulkAdminFile, setBulkAdminFile] = useState<File | null>(null);
+  const [bulkAdminStatus, setBulkAdminStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
+  const [bulkAdminMessage, setBulkAdminMessage] = useState<string>('');
+  const [bulkAdminResults, setBulkAdminResults] = useState<
+    {
+      row: number;
+      status: string;
+      userPrincipalName?: string;
+      displayName?: string;
+      requestId?: string;
+      proposedUserName?: string;
+      message?: string;
+    }[]
     | null
   >(null);
 
@@ -144,51 +161,28 @@ const CreateUserForm = () => {
     userCreationType,
   ]);
 
-  useEffect(() => {
-    if (!adminJobId || status !== 'processing') {
-      return undefined;
-    }
-    let cancelled = false;
-
-    const poll = async () => {
-      try {
-        const st = await getAdministrativeJobStatus(adminJobId);
-        if (cancelled) return;
-        if (st.status === 'completed' && st.result) {
-          const r = st.result;
-          setCreatedUser({
-            displayName: r.displayName,
-            userName: r.sAMAccountName,
-            email: r.email || r.userPrincipalName,
-            distinguishedName: r.distinguishedName ?? undefined,
-            creationType: 'administrative',
-          });
-          setAdminJobId(null);
-          setStatus('success');
-        } else if (st.status === 'failed') {
-          setErrorMessage(st.error || 'Error al crear el usuario en Active Directory');
-          setAdminJobId(null);
-          setStatus('error');
-        }
-      } catch (e) {
-        if (cancelled) return;
-        setErrorMessage(
-          e instanceof Error ? e.message : 'Error al consultar el estado del trabajo'
-        );
-        setAdminJobId(null);
-        setStatus('error');
-      }
-    };
-
-    void poll();
-    const intervalId = window.setInterval(() => void poll(), 10000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-    };
-  }, [adminJobId, status]);
-
   const validateField = (name: keyof UserFormData, value: string): string => {
+    if (name === 'cedula') {
+      const t = value.trim();
+      if (!t) {
+        return userCreationType === 'administrative' ? 'La cédula / ID es obligatoria' : '';
+      }
+      if (t.length < EMPLOYEE_ID_MIN || t.length > EMPLOYEE_ID_MAX) {
+        return `La cédula / ID debe tener entre ${EMPLOYEE_ID_MIN} y ${EMPLOYEE_ID_MAX} caracteres`;
+      }
+      if (!/^[0-9A-Za-z-]+$/.test(t)) {
+        return 'Solo alfanuméricos y guiones';
+      }
+      return '';
+    }
+
+    if (name === 'ciudad' && value.trim()) {
+      if (!/^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ0-9\s.,-]{1,60}$/.test(value.trim())) {
+        return 'Caracteres no permitidos en ciudad';
+      }
+      return '';
+    }
+
     if (value.length < 3) return 'Debe tener al menos 3 caracteres';
     if (value.length > 50) return 'No puede exceder 50 caracteres';
 
@@ -200,16 +194,6 @@ const CreateUserForm = () => {
     ) {
       const invalidChars = /[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s-]/;
       if (invalidChars.test(value)) return 'Solo se permiten letras';
-    }
-    if (name === 'cedula' && value.trim()) {
-      if (!/^[0-9A-Za-z-]{1,32}$/.test(value.trim())) {
-        return 'Solo alfanuméricos y guiones (máx. 32)';
-      }
-    }
-    if (name === 'ciudad' && value.trim()) {
-      if (!/^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ0-9\s.,-]{1,60}$/.test(value.trim())) {
-        return 'Caracteres no permitidos en ciudad';
-      }
     }
     return '';
   };
@@ -238,7 +222,13 @@ const CreateUserForm = () => {
     allFields.forEach((field) => {
       const value = formData[field];
 
-      if (field === 'cedula' || field === 'ciudad') {
+      if (field === 'cedula') {
+        const error = validateField(field, value);
+        if (error) newErrors[field] = error;
+        return;
+      }
+
+      if (field === 'ciudad') {
         if (!value.trim()) return;
         const error = validateField(field, value);
         if (error) newErrors[field] = error;
@@ -273,7 +263,7 @@ const CreateUserForm = () => {
       });
     }
 
-    if (status !== 'idle' && status !== 'processing') {
+    if (status !== 'idle') {
       setStatus('idle');
       setErrorMessage('');
     }
@@ -318,6 +308,44 @@ const CreateUserForm = () => {
     }
   };
 
+  const handleBulkAdminFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] || null;
+    setBulkAdminFile(file);
+    setBulkAdminMessage('');
+    setBulkAdminStatus('idle');
+  };
+
+  const handleBulkAdminUpload = async () => {
+    if (!bulkAdminFile) {
+      setBulkAdminMessage('Por favor selecciona un archivo de Excel.');
+      setBulkAdminStatus('error');
+      return;
+    }
+
+    try {
+      setBulkAdminStatus('loading');
+      setBulkAdminMessage('');
+      setBulkAdminResults(null);
+
+      const result = await uploadAdministrativeBulkUsers(bulkAdminFile);
+      const resultsArray = Array.isArray(result.results) ? result.results : [];
+      const successCount = resultsArray.filter((r: any) => r.status === 'success').length;
+      const errorCount = resultsArray.filter((r: any) => r.status === 'error').length;
+
+      setBulkAdminStatus('done');
+      setBulkAdminMessage(
+        `Carga completada: ${successCount} solicitudes encoladas, ${errorCount} con error.`
+      );
+      setBulkAdminResults(resultsArray);
+    } catch (err) {
+      setBulkAdminStatus('error');
+      setBulkAdminMessage(
+        err instanceof Error ? err.message : 'Error al cargar el archivo de usuarios administrativos.'
+      );
+      setBulkAdminResults(null);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!validateForm()) return;
@@ -352,7 +380,7 @@ const CreateUserForm = () => {
         department: departamentoNorm,
         ...(userCreationType === 'administrative'
           ? {
-              employeeId: formData.cedula.trim() || undefined,
+              employeeId: formData.cedula.trim(),
               city: formData.ciudad.trim() || undefined,
             }
           : {}),
@@ -374,9 +402,15 @@ const CreateUserForm = () => {
         });
         setStatus('success');
       } else {
-        const accepted = await createAdministrativeUser(payload);
-        setAdminJobId(accepted.jobId);
-        setStatus('processing');
+        const accepted = await createUserViaAdQueue(payload);
+        setCreatedUser({
+          displayName: accepted.displayName,
+          userName: accepted.proposedUserName,
+          email: accepted.userPrincipalName,
+          requestId: accepted.requestId,
+          creationType: 'administrative',
+        });
+        setStatus('success');
       }
     } catch (err) {
       setStatus('error');
@@ -392,6 +426,10 @@ const CreateUserForm = () => {
     setErrorMessage('');
     setNextUserName(null);
     setBulkResults(null);
+    setBulkAdminResults(null);
+    setBulkAdminFile(null);
+    setBulkAdminStatus('idle');
+    setBulkAdminMessage('');
     setFormData({
       primerNombre: '',
       segundoNombre: '',
@@ -402,10 +440,75 @@ const CreateUserForm = () => {
       cedula: '',
       ciudad: '',
     });
-    setAdminJobId(null);
   };
 
-  // Vista de éxito para carga masiva de usuarios
+  // Vista de éxito para carga masiva administrativa (cola AD)
+  if (bulkAdminResults && bulkAdminResults.some((r) => r.status === 'success')) {
+    const created = bulkAdminResults.filter((r) => r.status === 'success');
+    const failed = bulkAdminResults.filter((r) => r.status === 'error');
+
+    return (
+      <div className="success-wrapper">
+        <div className="success-card">
+          <div className="success-icon">✓</div>
+
+          <h2 className="success-title">Solicitudes administrativas encoladas</h2>
+
+          <p className="success-subtitle">
+            Se encolaron {created.length} usuarios para creación en Active Directory (archivos JSON en
+            la carpeta compartida). El procesamiento en el servidor puede tardar varios minutos.
+          </p>
+
+          <div className="success-table">
+            {created.map((u, index) => (
+              <div className="success-row" key={`admin-bulk-${index}`}>
+                <span className="success-label">FILA {u.row}</span>
+                <span className="success-value">
+                  {u.displayName} — {u.userPrincipalName}
+                  {u.requestId ? ` — ID: ${u.requestId}` : ''}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {failed.length > 0 && (
+            <>
+              <h3 className="success-subtitle">Registros con error ({failed.length})</h3>
+              <div className="success-table">
+                {failed.map((u, index) => (
+                  <div className="success-row" key={`admin-bulk-err-${index}`}>
+                    <span className="success-label">FILA {u.row}</span>
+                    <span className="success-value">
+                      {u.message || 'Error al encolar la solicitud.'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          <div className="success-note">
+            La contraseña y la creación final en AD las aplica el script en el servidor. Revise la
+            carpeta <code>error</code> en el share si alguna fila falló tras el envío.
+          </div>
+
+          <button
+            className="primary-btn"
+            onClick={() => {
+              setBulkAdminResults(null);
+              setBulkAdminFile(null);
+              setBulkAdminStatus('idle');
+              setBulkAdminMessage('');
+            }}
+          >
+            Volver al formulario
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Vista de éxito para carga masiva de usuarios operativos
   if (bulkResults && bulkResults.some((r) => r.status === 'success')) {
     const created = bulkResults.filter((r) => r.status === 'success');
     const failed = bulkResults.filter((r) => r.status === 'error');
@@ -476,22 +579,6 @@ const CreateUserForm = () => {
     );
   }
 
-  if (status === 'processing' && adminJobId) {
-    return (
-      <div className="success-wrapper">
-        <div className="success-card">
-          <h2 className="success-title">Creación en curso</h2>
-          <p className="success-subtitle">
-            El usuario se está creando en Active Directory mediante PowerShell. Puede tardar varios
-            minutos (replicación y sincronización con Microsoft 365). Esta pantalla se actualizará
-            sola.
-          </p>
-          <p className="note">Identificador de trabajo: {adminJobId}</p>
-        </div>
-      </div>
-    );
-  }
-
   // Vista de éxito para creación individual
   if (status === 'success' && createdUser) {
     return (
@@ -501,12 +588,14 @@ const CreateUserForm = () => {
           <div className="success-icon">✓</div>
 
           <h2 className="success-title">
-            Usuario creado exitosamente
+            {createdUser.creationType === 'administrative'
+              ? 'Solicitud encolada'
+              : 'Usuario creado exitosamente'}
           </h2>
 
           <p className="success-subtitle">
             {createdUser.creationType === 'administrative'
-              ? 'Usuario creado en Active Directory. Debe cambiar su contraseña en el primer inicio de sesión.'
+              ? 'La solicitud se guardó en la cola del servidor. El usuario se creará en Active Directory en breve y llegará a Microsoft 365 mediante Azure AD Connect; puede tardar varios minutos.'
               : 'El usuario debe cambiar su contraseña en el primer inicio de sesión.'}
           </p>
 
@@ -536,12 +625,10 @@ const CreateUserForm = () => {
               </span>
             </div>
 
-            {createdUser.distinguishedName && (
+            {createdUser.requestId && (
               <div className="success-row">
-                <span className="success-label">DN (AD)</span>
-                <span className="success-value mono">
-                  {createdUser.distinguishedName}
-                </span>
+                <span className="success-label">ID DE SOLICITUD</span>
+                <span className="success-value mono">{createdUser.requestId}</span>
               </div>
             )}
           </div>
@@ -549,8 +636,9 @@ const CreateUserForm = () => {
           <div className="success-note">
             {createdUser.creationType === 'administrative' ? (
               <>
-                La contraseña inicial la define el script de su organización (PowerShell). El usuario
-                deberá cumplir la política de su dominio al iniciar sesión.
+                La contraseña inicial la define el script de Active Directory en el servidor. El
+                nombre de usuario mostrado es la propuesta enviada en la cola; si ya existía en AD,
+                el servidor puede asignar otro.
               </>
             ) : (
               <>
@@ -581,7 +669,10 @@ const CreateUserForm = () => {
             setNextUserName(null);
             setStatus('idle');
             setErrorMessage('');
-            setAdminJobId(null);
+            setBulkAdminResults(null);
+            setBulkAdminFile(null);
+            setBulkAdminStatus('idle');
+            setBulkAdminMessage('');
           }}
         >
           Operativo (Microsoft 365)
@@ -596,7 +687,10 @@ const CreateUserForm = () => {
             setNextUserName(null);
             setStatus('idle');
             setErrorMessage('');
-            setAdminJobId(null);
+            setBulkResults(null);
+            setBulkFile(null);
+            setBulkStatus('idle');
+            setBulkMessage('');
           }}
         >
           Administrativo (Active Directory)
@@ -675,10 +769,10 @@ const CreateUserForm = () => {
 
       {userCreationType === 'administrative' && (
         <section className="dark-section">
-          <h3 className="section-title">DATOS ADICIONALES (OPCIONAL)</h3>
+          <h3 className="section-title">CÉDULA / ID Y CIUDAD</h3>
           <div className="two-col">
             <div className="field-group">
-              <label>CÉDULA / ID EMPLEADO</label>
+              <label>CÉDULA / ID EMPLEADO *</label>
               <input name="cedula" value={formData.cedula} onChange={handleChange} />
               {errors.cedula && <p className="error-text">{errors.cedula}</p>}
             </div>
@@ -695,7 +789,7 @@ const CreateUserForm = () => {
         <h3 className="section-title">
           {userCreationType === 'operational'
             ? 'VISTA PREVIA DE CUENTA M365'
-            : 'VISTA PREVIA DE CUENTA AD (PowerShell)'}
+            : 'VISTA PREVIA DE CUENTA AD (cola SMB)'}
         </h3>
 
         <div className="two-col">
@@ -746,15 +840,52 @@ const CreateUserForm = () => {
         </section>
       )}
 
+      {userCreationType === 'administrative' && (
+        <section className="dark-section">
+          <h3 className="section-title">CARGA MASIVA DESDE EXCEL (COLA AD)</h3>
+
+          <div className="field-group">
+            <label>ARCHIVO DE EXCEL</label>
+            <input
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={handleBulkAdminFileChange}
+            />
+            <p className="note">
+              Misma estructura que operativos: fila 1 título, fila 2 encabezados. Columnas:
+              PrimerNombre, SegundoNombre, PrimerApellido, SegundoApellido, Puesto, Departamento,{' '}
+              <strong>Cedula</strong> (obligatoria) y <strong>Ciudad</strong> (opcional). Cada fila
+              válida genera un archivo <code>{'pendiente-{uuid}.json'}</code> en la carpeta
+              compartida.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            className="primary-btn"
+            disabled={bulkAdminStatus === 'loading'}
+            onClick={handleBulkAdminUpload}
+          >
+            {bulkAdminStatus === 'loading'
+              ? 'Encolando solicitudes…'
+              : 'Cargar usuarios administrativos desde Excel'}
+          </button>
+
+          {bulkAdminMessage && (
+            <p className={bulkAdminStatus === 'error' ? 'error-text' : 'note'}>
+              {bulkAdminMessage}
+            </p>
+          )}
+        </section>
+      )}
+
       <button
         className="primary-btn"
-        disabled={status === 'loading' || status === 'processing'}
+        disabled={status === 'loading'}
       >
         {status === 'loading'
           ? 'Creando usuario…'
-          : status === 'processing'
-            ? 'Procesando en segundo plano…'
-            : userCreationType === 'operational'
+          : userCreationType === 'operational'
               ? 'Crear usuario operativo'
               : 'Crear usuario administrativo (AD)'}
       </button>

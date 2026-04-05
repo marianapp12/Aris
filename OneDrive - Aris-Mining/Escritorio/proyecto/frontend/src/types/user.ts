@@ -22,30 +22,14 @@ export interface NextUsernameResponse {
   userPrincipalName: string;
 }
 
-/** Resultado final del trabajo asíncrono (PowerShell / AD). */
-export interface CreateAdministrativeUserResponse {
-  distinguishedName?: string | null;
-  sAMAccountName: string;
+/** Respuesta 202 al encolar creación administrativa vía carpeta compartida (SMB). */
+export interface AdQueueCreationAccepted {
+  requestId: string;
+  message: string;
+  queuePath: string;
+  proposedUserName: string;
   userPrincipalName: string;
   displayName: string;
-  email: string;
-  message?: string;
-}
-
-/** Respuesta 202 al encolar creación administrativa. */
-export interface AdministrativeCreationAccepted {
-  jobId: string;
-  statusUrl: string;
-  message: string;
-}
-
-export interface AdministrativeJobStatus {
-  jobId: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
-  createdAt: string;
-  result?: CreateAdministrativeUserResponse;
-  error?: string;
-  log?: string;
 }
 
 export interface UserFormData {

@@ -3,8 +3,7 @@ import {
   CreateUserRequest,
   CreateUserResponse,
   NextUsernameResponse,
-  AdministrativeCreationAccepted,
-  AdministrativeJobStatus,
+  AdQueueCreationAccepted,
 } from '../types/user';
 
 /**
@@ -65,11 +64,45 @@ export const createOperationalUser = async (
   }
 };
 
+/**
+ * Encola creación corporativa en AD: el backend escribe un JSON en la ruta UNC configurada.
+ * POST /api/users
+ */
+export const createUserViaAdQueue = async (
+  payload: CreateUserRequest
+): Promise<AdQueueCreationAccepted> => {
+  try {
+    const response = await apiClient.post<AdQueueCreationAccepted>('/users', payload, {
+      validateStatus: () => true,
+    });
+    if (response.status === 202) {
+      return response.data;
+    }
+    const data = response.data as { message?: string; error?: string };
+    const message =
+      data?.message || data?.error || `Error al encolar el usuario administrativo (${response.status})`;
+    throw new Error(message);
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      if (error.response) {
+        const message =
+          error.response.data?.message ||
+          error.response.data?.error ||
+          'Error al encolar el usuario administrativo';
+        throw new Error(message);
+      }
+      throw new Error('Error de conexión con el servidor');
+    }
+    throw error;
+  }
+};
+
+/** Compatibilidad: mismo cuerpo y respuesta que createUserViaAdQueue; ruta legacy POST /administrative. */
 export const createAdministrativeUser = async (
   payload: CreateUserRequest
-): Promise<AdministrativeCreationAccepted> => {
+): Promise<AdQueueCreationAccepted> => {
   try {
-    const response = await apiClient.post<AdministrativeCreationAccepted>(
+    const response = await apiClient.post<AdQueueCreationAccepted>(
       '/users/administrative',
       payload,
       { validateStatus: () => true }
@@ -79,7 +112,7 @@ export const createAdministrativeUser = async (
     }
     const data = response.data as { message?: string; error?: string };
     const message =
-      data?.message || data?.error || `Error al crear el usuario administrativo (${response.status})`;
+      data?.message || data?.error || `Error al encolar el usuario administrativo (${response.status})`;
     throw new Error(message);
   } catch (error) {
     if (axios.isAxiosError(error)) {
@@ -87,22 +120,13 @@ export const createAdministrativeUser = async (
         const message =
           error.response.data?.message ||
           error.response.data?.error ||
-          'Error al crear el usuario administrativo';
+          'Error al encolar el usuario administrativo';
         throw new Error(message);
       }
       throw new Error('Error de conexión con el servidor');
     }
     throw error;
   }
-};
-
-export const getAdministrativeJobStatus = async (
-  jobId: string
-): Promise<AdministrativeJobStatus> => {
-  const response = await apiClient.get<AdministrativeJobStatus>(
-    `/users/administrative/jobs/${jobId}`
-  );
-  return response.data;
 };
 
 export const getNextAdministrativeUsername = async (params: {
@@ -144,6 +168,20 @@ export const uploadBulkUsers = async (file: File): Promise<any> => {
   const response = await apiClient.post('/users/operational/bulk', formData, {
     headers: {
       // Deja que el navegador establezca el boundary correcto
+      'Content-Type': 'multipart/form-data',
+    },
+  });
+
+  return response.data;
+};
+
+/** Carga masiva administrativa (cola AD / SMB). Misma plantilla que operativos + Cedula y opcional Ciudad. */
+export const uploadAdministrativeBulkUsers = async (file: File): Promise<any> => {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const response = await apiClient.post('/users/administrative/bulk', formData, {
+    headers: {
       'Content-Type': 'multipart/form-data',
     },
   });

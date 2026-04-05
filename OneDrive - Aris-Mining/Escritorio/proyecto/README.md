@@ -1,6 +1,6 @@
 # Sistema de creación de usuarios — Microsoft 365 y Active Directory
 
-Sistema para crear **usuarios operativos en Microsoft 365** (Microsoft Graph) y **usuarios administrativos en Active Directory local** (PowerShell remoto con `Invoke-Command` / `New-ADUser`), con front-end en React+TypeScript y backend en Node.js/Express (**el backend para administrativos debe ejecutarse en Windows**).
+Sistema para crear **usuarios operativos en Microsoft 365** (Microsoft Graph) y **usuarios administrativos en Active Directory local** mediante una **cola de archivos JSON** en una carpeta compartida (SMB/UNC) escrita por Node; un **script PowerShell** en el servidor (Programador de tareas) ejecuta `New-ADUser` y elimina cada solicitud procesada. Front-end en React+TypeScript y backend en Node.js/Express (**el PC que ejecuta Node necesita permiso de escritura en la UNC**; suele ser Windows en red corporativa).
 
 ## Estructura del Proyecto
 
@@ -8,16 +8,19 @@ Sistema para crear **usuarios operativos en Microsoft 365** (Microsoft Graph) y 
 proyecto/
 ├── frontend/          # Aplicación React + TypeScript
 ├── backend/           # API Node.js + Express con integración Microsoft Graph
+├── docs/server-scripts/  # Script PowerShell de ejemplo para el servidor (cola AD)
 └── README.md          # Este archivo
 ```
 
 ## Características principales
 
 - **Operativos (Microsoft 365)**: creación vía Microsoft Graph; sin licencias por defecto; contraseña inicial con cambio obligatorio en primer inicio.
-- **Administrativos (Active Directory local)**: creación vía **scripts PowerShell** (`Create-AdAdministrativeUser.ps1`) lanzados desde Node; `Invoke-Command` contra `AD_PS_COMPUTER_NAME`; grupos AD y pasos opcionales EXO/MSOL/replicación según `.env`.
-- **Validación de unicidad**: Graph para M365; para AD, script `Select-FirstAvailableAdSam.ps1` con `Get-ADUser` remoto (si falla o no es Windows, se usa el primer candidato generado en servidor).
-- **Creación administrativa asíncrona**: `POST /api/users/administrative` responde **202** con `jobId`; el cliente consulta `GET /api/users/administrative/jobs/:jobId` hasta `completed` o `failed` (el flujo puede tardar muchos minutos).
-- **Front-end**: pestañas **Operativo (Microsoft 365)** y **Administrativo (Active Directory)**; carga masiva Excel solo para operativos.
+- **Administrativos (Active Directory local)**: Node escribe **`pendiente-{uuid}.json`** en la ruta **`AD_QUEUE_UNC`**; el script **`docs/server-scripts/Process-AdUserQueue.ps1`** (en el servidor) procesa la cola y crea el usuario en AD; **Azure AD Connect** sincroniza hacia Microsoft 365.
+- **Administrativos — cédula / ID**: obligatoria en API y formulario (5–32 caracteres alfanuméricos y guiones). Antes de encolar, el backend consulta **Microsoft Graph** para rechazar **409** si `employeeId` ya existe en el inquilino, y elige **samAccountName/UPN** recorriendo las mismas variantes que en operativos hasta encontrar un correo libre. **`AD_QUEUE_SKIP_GRAPH_PRECHECK=true`** desactiva ese prechequeo (solo pruebas; no recomendado en producción).
+- **Validación en AD**: el script en servidor comprueba `samAccountName` y **EmployeeID** duplicados antes de `New-ADUser`. Usuarios solo on‑prem aún no sincronizados pueden no aparecer en Graph hasta que AADC ejecute un ciclo.
+- **Vista previa de usuario administrativo**: **`GET /api/users/administrative/next-username`** usa Graph (salvo `AD_QUEUE_SKIP_GRAPH_PRECHECK`) para devolver el primer **mailNickname/UPN** libre coherente con la lógica de operativos.
+- **Creación administrativa encolada**: **`POST /api/users`** (y el alias **`POST /api/users/administrative`**) responden **202** con `requestId`, ruta del archivo y datos propuestos; no hay polling de trabajos en el backend.
+- **Front-end**: pestañas **Operativo (Microsoft 365)** y **Administrativo (Active Directory)**; carga masiva Excel para operativos (Graph) y para administrativos (cola AD).
 
 ## Requisitos Previos
 
@@ -36,9 +39,9 @@ proyecto/
    - Versión 18 o superior
 
 3. **Active Directory (solo para usuarios administrativos)**
-   - **Windows** donde corre Node, con **WinRM** hacia el equipo definido en `AD_PS_COMPUTER_NAME` (donde se ejecuta `New-ADUser`).
-   - Módulos **ActiveDirectory** en el destino remoto; opcionalmente **ExchangeOnlineManagement** y **MSOnline** si `AD_PS_SKIP_CLOUD_STEPS=false`.
-   - Variables **`AD_PS_*`** según `backend/.env.example` (OU, dominio de correo, grupos, credenciales EXO si aplica).
+   - **Recurso compartido** accesible desde el PC donde corre Node (`AD_QUEUE_UNC`), con ACL de escritura para la cuenta que ejecuta el proceso Node.
+   - En el **servidor** (o equipo con permisos en AD): módulo **ActiveDirectory** para PowerShell y tarea programada que ejecute `Process-AdUserQueue.ps1` (ver `docs/server-scripts/README.md`).
+   - Variables **`AD_QUEUE_*`** según `backend/.env.example`.
 
 ### Para el Frontend
 
@@ -60,7 +63,7 @@ Copiar `.env.example` a `.env` y configurar las variables:
 cp .env.example .env
 ```
 
-Editar `.env` con tus credenciales. Incluye Azure AD **y**, si usas administrativos, las variables **`AD_PS_*`** (ver `backend/.env.example`).
+Editar `.env` con tus credenciales. Incluye Azure AD **y**, si usas administrativos, las variables **`AD_QUEUE_*`** (ver `backend/.env.example`).
 
 ```
 AZURE_TENANT_ID=tu-tenant-id
@@ -69,14 +72,11 @@ AZURE_CLIENT_SECRET=tu-client-secret
 PORT=5000
 NODE_ENV=development
 
-# Active Directory — administrativos (PowerShell); ver backend/.env.example
-AD_PS_COMPUTER_NAME=dc01.corp.local
-AD_PS_OU_PATH=OU=Administrativos,DC=corp,DC=local
-AD_PS_EMAIL_DOMAIN=empresa.co
-AD_PS_COMPANY=MiEmpresa
-AD_PS_HOME_DIRECTORY_ROOT=E:\Usr
-AD_PS_GROUPS=Grupo1,Grupo2
-AD_PS_SKIP_CLOUD_STEPS=true
+# Active Directory — cola SMB; ver backend/.env.example
+AD_QUEUE_UNC=\\10.10.11.9\scripts\pending
+AD_QUEUE_EMAIL_DOMAIN=empresa.co
+# Opcional: atributo Company en AD (campo empresa en el JSON)
+# AD_QUEUE_COMPANY=Mi Empresa
 ```
 
 ### Frontend
@@ -86,7 +86,7 @@ cd frontend
 npm install
 ```
 
-Crear `frontend/.env` según `frontend/.env.example` (API, Entra ID para el login SPA, y **`VITE_AD_UPN_SUFFIX`** alineado con **`AD_PS_EMAIL_DOMAIN`** del backend, p. ej. `empresa.co`, para la vista previa de UPN en la pestaña administrativa).
+Crear `frontend/.env` según `frontend/.env.example` (API, Entra ID para el login SPA, y **`VITE_AD_UPN_SUFFIX`** alineado con **`AD_QUEUE_EMAIL_DOMAIN`** del backend, p. ej. `empresa.co`, para la vista previa de UPN en la pestaña administrativa).
 
 **`VITE_API_BASE_URL` (importante):** las rutas del servidor son `/api/users/...`. Usa una de estas opciones:
 
@@ -158,20 +158,22 @@ npm run build
 
 ### Administrativo (Active Directory)
 
-1. Mismos campos del formulario (pestaña **Administrativo**), más **cédula / ID** y **ciudad** opcionales.
-2. El backend genera candidatos de `sAMAccountName` (máx. 20 caracteres) y elige el primero libre en AD vía PowerShell remoto cuando es posible.
-3. `POST /administrative` encola un trabajo que ejecuta `Create-AdAdministrativeUser.ps1` (usuario habilitado, contraseña generada, `HomeDrive` Z:, grupos de `AD_PS_GROUPS`, etc.). El estado del trabajo se guarda **en memoria** (no usar varias instancias del servidor sin un almacén compartido).
+1. Mismos campos del formulario (pestaña **Administrativo**), **cédula / ID obligatoria** (5–32 caracteres) y **ciudad** opcional.
+2. El backend valida contra **Microsoft Graph** que no exista otro usuario con el mismo `employeeId` y elige un **UPN/sAMAccountName** libre con la misma secuencia de candidatos que en operativos (salvo `AD_QUEUE_SKIP_GRAPH_PRECHECK`).
+3. Se escribe **`pendiente-{uuid}.json`** en **`AD_QUEUE_UNC`** con `employeeId`, `samAccountName`, `userPrincipalName`, etc.
+4. El script **`Process-AdUserQueue.ps1`** comprueba de nuevo **EmployeeID** y **SamAccountName** en AD, crea con `New-ADUser`, borra el JSON o mueve a **`error\`**. **Azure AD Connect** sincroniza hacia Microsoft 365.
 
-### Troubleshooting PowerShell / AD (administrativos)
+### Troubleshooting cola SMB / AD (administrativos)
 
 | Síntoma | Qué revisar |
 | --- | --- |
-| 503 Configuración incompleta | Variables `AD_PS_*` obligatorias en `.env` (ver `.env.example`). |
-| WinRM / Kerberos `0x80090311` / «dominio no disponible» | PC conectado a la red del dominio o VPN; usar **FQDN** del DC en `AD_PS_COMPUTER_NAME`; o bien sesión con usuario de dominio. |
-| WinRM con **IP** («TrustedHosts», credenciales) | En el cliente: `Set-Item WSMan:\localhost\Client\TrustedHosts -Value 'IP_o_host' -Concatenate` (PowerShell como admin). En `.env`: `AD_PS_WINRM_USER` y `AD_PS_WINRM_PASSWORD` (cuenta de dominio). |
-| WinRM / acceso denegado | Firewall del DC (5985/5986); permisos de la cuenta en AD; que el servicio WinRM esté activo en el destino. |
-| Módulos no encontrados | RSAT/AD PowerShell en el servidor remoto; `ExchangeOnlineManagement` / `MSOnline` si no usáis `AD_PS_SKIP_CLOUD_STEPS=true`. |
-| Trabajo `failed` | Revisar `log` en la respuesta del job en modo `development`; salida stderr de PowerShell. |
+| 503 Configuración incompleta | Variables `AD_QUEUE_UNC` y `AD_QUEUE_EMAIL_DOMAIN` en `.env` (ver `.env.example`). |
+| 503 Prechequeo Graph | Credenciales `AZURE_*` faltantes o error al llamar a Graph; o use `AD_QUEUE_SKIP_GRAPH_PRECHECK` solo en pruebas. |
+| 409 Cédula duplicada | Ya existe un usuario en el inquilino M365 con el mismo `employeeId`. |
+| 422 Sin UPN disponible | Agotadas las variantes de nombre de usuario en Graph; revisar manualmente. |
+| 500 / error al escribir la cola | Que la UNC exista; que la cuenta de Windows que ejecuta Node tenga **permiso de escritura** en el recurso; firewall SMB (445) entre PC y servidor de archivos. |
+| No se crean usuarios en AD | Que la **tarea programada** en el servidor esté activa; permisos de la cuenta de la tarea en la OU; logs en `error\` junto al JSON fallido (`docs/server-scripts/README.md`). |
+| `samAccountName ya existe` / EmployeeID duplicado | Colisión en AD; el script mueve el archivo a `error\`. |
 
 Tras modificar `.env`, **reinicie el backend**.
 
@@ -207,30 +209,67 @@ Crea un nuevo usuario operativo en Microsoft 365.
 }
 ```
 
-### GET /api/users/administrative/next-username
+### POST /api/users
 
-Misma query que `/api/users/next-username`: `givenName`, `surname1`, `surname2` (opcional). Devuelve el siguiente `sAMAccountName` disponible en AD.
+Encola la creación corporativa en Active Directory escribiendo **`pendiente-{requestId}.json`** en **`AD_QUEUE_UNC`**.
 
-### POST /api/users/administrative
+**Request:** igual que `POST /api/users/operational`, con **`employeeId` (cédula / ID) obligatorio** y `city` opcional.
 
-Encola la creación de un usuario administrativo en Active Directory (PowerShell).
-
-**Request:** igual que `POST /api/users/operational`, con opcionales `employeeId` (cédula) y `city`.
+**Response (409):** si la cédula ya existe en Microsoft Graph (`employeeId` duplicado).
 
 **Response (202 Accepted):**
 ```json
 {
-  "jobId": "uuid",
-  "statusUrl": "/api/users/administrative/jobs/uuid",
-  "message": "Creación encolada..."
+  "requestId": "uuid",
+  "message": "Solicitud encolada...",
+  "queuePath": "\\\\servidor\\share\\pending\\pendiente-uuid.json",
+  "proposedUserName": "juan.perez",
+  "userPrincipalName": "juan.perez@empresa.co",
+  "displayName": "Juan Pérez"
 }
 ```
 
-### GET /api/users/administrative/jobs/:jobId
+### POST /api/users/administrative
 
-Estado del trabajo: `pending` | `running` | `completed` | `failed`. Si `completed`, `result` incluye `sAMAccountName`, `userPrincipalName`, `displayName`, `email`.
+Mismo cuerpo y respuesta que **`POST /api/users`** (compatibilidad con clientes existentes).
 
-**Nota:** los trabajos se almacenan en memoria; al reiniciar el servidor se pierden.
+### GET /api/users/administrative/next-username
+
+Misma query que `/api/users/next-username`: `givenName`, `surname1`, `surname2` (opcional). Con prechequeo Graph activo, devuelve el primer **sAMAccountName/UPN** libre en el inquilino (misma lógica que operativos). Con `AD_QUEUE_SKIP_GRAPH_PRECHECK`, solo el primer candidato teórico sin consultar Graph.
+
+### POST /api/users/administrative/bulk
+
+Carga masiva de usuarios administrativos con el mismo patrón Excel que operativos (**`multipart/form-data`**, campo **`file`**, `.xlsx` / `.xls`).
+
+**Plantilla:** fila 1 título (p. ej. ARIS MINING), fila 2 encabezados, datos desde fila 3. Columnas:
+
+| Columna | Obligatoria | Notas |
+| --- | --- | --- |
+| `PrimerNombre`, `SegundoNombre`, `PrimerApellido`, `SegundoApellido` | Sí (segundo nombre/apellido pueden ir vacíos según reglas del formulario) | Misma normalización que el alta individual |
+| `Puesto`, `Departamento` | Sí | |
+| `Cedula` o `Cédula` | Sí | Se mapea a `employeeId`; no puede repetirse dentro del mismo archivo |
+| `Ciudad` | No | |
+
+Por cada fila válida se aplica la misma lógica que **`POST /api/users/administrative`**: validación, prechequeo en **Microsoft Graph** (salvo `AD_QUEUE_SKIP_GRAPH_PRECHECK`) y escritura de **`pendiente-{requestId}.json`** en **`AD_QUEUE_UNC`**. Las filas con error aparecen en `results` sin encolar.
+
+**Response (201):** siempre que el archivo se haya procesado, aunque haya filas con error:
+
+```json
+{
+  "message": "…",
+  "results": [
+    {
+      "row": 3,
+      "status": "success",
+      "requestId": "uuid",
+      "userPrincipalName": "juan.perez@empresa.co",
+      "displayName": "Juan Pérez",
+      "proposedUserName": "juan.perez"
+    },
+    { "row": 4, "status": "error", "message": "…" }
+  ]
+}
+```
 
 ## Configuración de Azure AD
 
@@ -272,7 +311,7 @@ La aplicación debe tener los siguientes permisos de **aplicación** (no delegad
 - Express
 - @microsoft/microsoft-graph-client
 - @azure/identity
-- Scripts PowerShell en `backend/scripts/` (creación y selección de SamAccountName en AD remoto)
+- Cola SMB (`AD_QUEUE_UNC`) y script de ejemplo en `docs/server-scripts/` para el servidor
 
 ## Licencia
 
