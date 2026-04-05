@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import CreateUserForm from './components/CreateUserForm';
+import CreateUserForm, { INITIAL_PASSWORD_M365 } from './components/CreateUserForm';
 import './App.css';
+import './components/auth/login.css';
 import { useIsAuthenticated, useMsal } from '@azure/msal-react';
 import { Login } from './components/auth/Login';
+import { BrandLogo } from './components/branding/BrandLogo';
 import { ensureUserInLogiGroup } from './auth/graph';
 import { InteractionStatus } from '@azure/msal-browser';
 
@@ -60,7 +62,7 @@ const App: React.FC = () => {
         <div className="loginBg" />
         <div className="loginCard fadeIn">
           <div className="loginLogoArea">
-            <div className="loginLogoPlaceholder">Company Logo</div>
+            <BrandLogo className="loginLogoImg" />
           </div>
           <div className="loginContent">
             <h1 className="loginTitle">Loading…</h1>
@@ -116,10 +118,10 @@ const App: React.FC = () => {
       <header className="app-header">
         <div className="header-inner">
           <div className="brand">
-            <div className="brand-mark">AM</div>
+            <BrandLogo variant="header" className="brand-logo-img" />
             <div className="brand-text">
               <span className="brand-name">ARIS MINING</span>
-              <span className="brand-sub">Gestión de Usuarios M365</span>
+              <span className="brand-sub">Creación de usuarios</span>
             </div>
           </div>
 
@@ -141,11 +143,16 @@ const App: React.FC = () => {
       <main className="app-main">
         <div className="page-container">
           <div className="page-header">
-            <h1 className="page-title">Crear Usuario Operativo</h1>
+            <h1 className="page-title">Creación de usuarios</h1>
             <p className="page-description">
-              Complete el formulario para provisionar un nuevo usuario en Microsoft 365.
-              El usuario recibirá acceso inicial sin licencia y deberá cambiar su
-              contraseña en el primer inicio de sesión.
+              Use las pestañas del formulario para elegir el tipo de alta:{' '}
+              <strong>Operativo (Microsoft 365)</strong> crea la cuenta directamente en el inquilino
+              de Microsoft 365; la contraseña inicial asignada es{' '}
+              <strong>{INITIAL_PASSWORD_M365}</strong> y el usuario deberá cambiarla en el primer
+              inicio de sesión (sin licencia por defecto).{' '}
+              <strong>Administrativo (Active Directory)</strong> encola la solicitud para que el
+              servidor cree el usuario en AD local (sincronización con M365 vía Azure AD Connect); la
+              contraseña inicial la define el script en el servidor.
             </p>
           </div>
 

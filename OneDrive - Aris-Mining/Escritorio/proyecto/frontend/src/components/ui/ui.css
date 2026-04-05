@@ -1,6 +1,6 @@
 :root {
-  --corp-primary: #1c31a6;
-  --corp-secondary: #2a82aa;
+  --corp-primary: #0388A6;
+  --corp-secondary: #0388A6;
   --corp-dark: #172540;
   --corp-bg: #ffffff;
 }
@@ -31,8 +31,8 @@
 }
 
 .uiInput:focus {
-  border-color: rgba(28, 49, 166, 0.6);
-  box-shadow: 0 0 0 4px rgba(28, 49, 166, 0.12);
+  border-color: rgba(3, 136, 166, 0.55);
+  box-shadow: 0 0 0 4px rgba(3, 136, 166, 0.15);
 }
 
 .uiInputError {
@@ -56,7 +56,7 @@
   letter-spacing: 0.2px;
   cursor: pointer;
   transition: transform 0.12s ease, filter 0.12s ease, box-shadow 0.12s ease;
-  box-shadow: 0 10px 20px rgba(28, 49, 166, 0.2);
+  box-shadow: 0 10px 20px rgba(3, 136, 166, 0.22);
 }
 
 .uiButton:hover:not(:disabled) {

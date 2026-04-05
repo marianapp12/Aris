@@ -4,14 +4,14 @@
 /* ── Variables ─────────────────────────────────────────────────────────── */
 
 :root {
-  --navy:        #0a0f1e;
-  --navy-mid:    #111827;
-  --navy-card:   #161d2e;
-  --navy-border: #1e2940;
-  --gold:        #c9a84c;
-  --gold-light:  #e5c878;
-  --gold-dim:    rgba(201, 168, 76, 0.15);
-  --text:        #e8eaf0;
+  --navy:        #172540;
+  --navy-mid:    #1a2d4a;
+  --navy-card:   #1e2f4d;
+  --navy-border: rgba(3, 136, 166, 0.22);
+  --gold:        #0388A6;
+  --gold-light:  #5ec4dc;
+  --gold-dim:    rgba(3, 136, 166, 0.15);
+  --text:        #f2f2f2;
   --text-muted:  #7a8499;
   --text-dim:    #4a5470;
   --error:       #e05c5c;
@@ -485,8 +485,8 @@
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  background: rgba(201, 168, 76, 0.08);
-  border: 1px solid rgba(201, 168, 76, 0.25);
+  background: rgba(3, 136, 166, 0.1);
+  border: 1px solid rgba(3, 136, 166, 0.35);
   border-radius: var(--radius);
   padding: 14px 16px;
   margin-bottom: 1.75rem;
@@ -522,4 +522,10 @@
   .page-title { font-size: 1.8rem; }
   .detail-row { flex-direction: column; align-items: flex-start; }
   .detail-value { text-align: left; }
+}
+
+
+.brand-logo-img {
+  flex-shrink: 0;
+  display: block;
 }

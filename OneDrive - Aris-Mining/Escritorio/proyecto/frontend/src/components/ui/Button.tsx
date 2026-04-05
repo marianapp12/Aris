@@ -23,7 +23,7 @@ export function Button({
       onClick={onClick}
       disabled={disabled || loading}
     >
-      {loading ? 'Signing in…' : children}
+      {loading ? 'Iniciando sesión…' : children}
     </button>
   );
 }
