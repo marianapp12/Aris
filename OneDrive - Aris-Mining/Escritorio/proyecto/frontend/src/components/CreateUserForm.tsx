@@ -852,11 +852,13 @@ const CreateUserForm = () => {
               onChange={handleBulkAdminFileChange}
             />
             <p className="note">
-              Misma estructura que operativos: fila 1 título, fila 2 encabezados. Columnas:
+              Puede usar fila 1 solo con encabezados y datos desde fila 2, o fila 1 título + fila 2
+              encabezados + datos desde fila 3 (el sistema detecta el formato). Columnas:{' '}
               PrimerNombre, SegundoNombre, PrimerApellido, SegundoApellido, Puesto, Departamento,{' '}
-              <strong>Cedula</strong> (obligatoria) y <strong>Ciudad</strong> (opcional). Cada fila
-              válida genera un archivo <code>{'pendiente-{uuid}.json'}</code> en la carpeta
-              compartida.
+              <strong>Cedula</strong> (obligatoria; también acepta Documento o espacios en los
+              nombres de columna) y <strong>Ciudad</strong> (opcional). La cédula debe tener al menos
+              5 caracteres (mejor formato texto en Excel). Cada fila válida genera un archivo{' '}
+              <code>{'pendiente-{uuid}.json'}</code> en la carpeta compartida.
             </p>
           </div>
 

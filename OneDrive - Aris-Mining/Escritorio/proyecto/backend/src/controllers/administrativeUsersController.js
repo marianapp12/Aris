@@ -10,6 +10,7 @@ import {
   AdministrativePrecheckError,
   pickAvailableSamAndUpn,
 } from '../services/graphAdministrativePrecheck.js';
+import { parseAdministrativeBulkSheet } from '../utils/excelAdministrativeBulkParse.js';
 
 const toTitleCase = (value) =>
   value
@@ -21,12 +22,6 @@ const toTitleCase = (value) =>
 
 const onlyLettersRegex = /[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s-]/;
 const hasInvalidCharsForName = (value) => value && onlyLettersRegex.test(value);
-
-function readCedulaFromRow(row) {
-  if (row.Cedula != null && String(row.Cedula).trim() !== '') return String(row.Cedula).trim();
-  if (row['Cédula'] != null && String(row['Cédula']).trim() !== '') return String(row['Cédula']).trim();
-  return '';
-}
 
 /**
  * POST /api/users y POST /api/users/administrative — 202 Accepted + requestId (cola SMB)
@@ -169,7 +164,8 @@ export const getNextAdministrativeUsername = async (req, res) => {
 /**
  * POST /api/users/administrative/bulk
  * Carga masiva: misma plantilla que operativos + Cedula (obligatoria) y Ciudad (opcional).
- * Fila 1 título, fila 2 encabezados, datos desde fila 3.
+ * Soporta (1) fila 1 título + fila 2 encabezados + datos desde fila 3, o (2) fila 1 encabezados + datos desde fila 2.
+ * Encabezados admiten variantes (espacios, mayúsculas, tildes; sinónimos como Documento → cédula).
  */
 export const createAdministrativeUsersBulk = async (req, res) => {
   try {
@@ -191,7 +187,7 @@ export const createAdministrativeUsersBulk = async (req, res) => {
       });
     }
 
-    const rows = XLSX.utils.sheet_to_json(sheet, { range: 1 });
+    const { rows, firstDataExcelRow } = parseAdministrativeBulkSheet(sheet);
 
     if (!rows.length) {
       return res.status(400).json({
@@ -205,7 +201,7 @@ export const createAdministrativeUsersBulk = async (req, res) => {
 
     for (let index = 0; index < rows.length; index++) {
       const row = rows[index];
-      const rowNumber = index + 3;
+      const rowNumber = index + firstDataExcelRow;
 
       const primerNombre = (row.PrimerNombre || '').toString().trim();
       const segundoNombre = (row.SegundoNombre || '').toString().trim();
@@ -213,7 +209,7 @@ export const createAdministrativeUsersBulk = async (req, res) => {
       const segundoApellido = (row.SegundoApellido || '').toString().trim();
       const puesto = (row.Puesto || '').toString().trim();
       const departamento = (row.Departamento || '').toString().trim();
-      const cedulaRaw = readCedulaFromRow(row);
+      const cedulaRaw = (row.Cedula || '').toString().trim();
       const ciudad = (row.Ciudad || '').toString().trim();
 
       if (!primerNombre || !primerApellido || !puesto || !departamento || !cedulaRaw) {

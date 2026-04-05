@@ -241,7 +241,7 @@ Misma query que `/api/users/next-username`: `givenName`, `surname1`, `surname2` 
 
 Carga masiva de usuarios administrativos con el mismo patrón Excel que operativos (**`multipart/form-data`**, campo **`file`**, `.xlsx` / `.xls`).
 
-**Plantilla:** fila 1 título (p. ej. ARIS MINING), fila 2 encabezados, datos desde fila 3. Columnas:
+**Plantilla:** admite dos formatos; el backend elige automáticamente el que mejor encaje: (A) fila 1 título, fila 2 encabezados, datos desde fila 3; o (B) fila 1 encabezados y datos desde fila 2. Los nombres de columna pueden llevar espacios o tildes; se aceptan sinónimos como `Documento` / `NumeroCedula` para la cédula. Columnas:
 
 | Columna | Obligatoria | Notas |
 | --- | --- | --- |
