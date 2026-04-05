@@ -5,6 +5,7 @@ import {
   createUserViaAdQueue,
   getNextAvailableUsername,
   getNextAdministrativeUsername,
+  testAdministrativeQueueConnection,
   uploadBulkUsers,
   uploadAdministrativeBulkUsers,
 } from '../services/apiClient';
@@ -37,6 +38,12 @@ type CreatedUser = {
   requestId?: string;
   creationType: UserCreationType;
 };
+
+const SMB_QUEUE_HELP_STEPS: string[] = [
+  'El navegador no escribe en la carpeta compartida: quien necesita acceso SMB es la máquina (o servidor) donde está ejecutándose el backend Node.',
+  'Revise en el servidor que AD_QUEUE_UNC en el archivo .env del backend sea la ruta correcta (por ejemplo \\\\servidor\\carpeta\\pendiente) y, tras cualquier cambio, reinicie el proceso del backend. En esa misma PC con Windows, pulse Win + R, escriba la misma ruta UNC y pulse Enter; si pide credenciales, use un usuario de dominio o del servidor con permiso de escritura en el recurso compartido.',
+  'Vuelva a pulsar “Probar conexión” cuando haya completado los pasos anteriores.',
+];
 
 const CreateUserForm = () => {
   const [userCreationType, setUserCreationType] =
@@ -82,6 +89,16 @@ const CreateUserForm = () => {
     }[]
     | null
   >(null);
+
+  const [queueConnStatus, setQueueConnStatus] = useState<'idle' | 'loading' | 'success' | 'error'>(
+    'idle'
+  );
+  const [queueConnDetail, setQueueConnDetail] = useState<{
+    ok?: boolean;
+    message?: string;
+    uncPath?: string;
+    code?: string;
+  } | null>(null);
 
   const userPreview = useMemo<UserPreview | null>(() => {
     const rawPrimerNombre = formData.primerNombre.trim();
@@ -343,6 +360,22 @@ const CreateUserForm = () => {
         err instanceof Error ? err.message : 'Error al cargar el archivo de usuarios administrativos.'
       );
       setBulkAdminResults(null);
+    }
+  };
+
+  const handleTestQueueConnection = async () => {
+    setQueueConnStatus('loading');
+    setQueueConnDetail(null);
+    try {
+      const data = await testAdministrativeQueueConnection();
+      setQueueConnDetail(data);
+      setQueueConnStatus(data.ok ? 'success' : 'error');
+    } catch {
+      setQueueConnDetail({
+        ok: false,
+        message: 'No se pudo contactar al servidor o la respuesta no es válida.',
+      });
+      setQueueConnStatus('error');
     }
   };
 
@@ -673,6 +706,8 @@ const CreateUserForm = () => {
             setBulkAdminFile(null);
             setBulkAdminStatus('idle');
             setBulkAdminMessage('');
+            setQueueConnStatus('idle');
+            setQueueConnDetail(null);
           }}
         >
           Operativo (Microsoft 365)
@@ -766,6 +801,57 @@ const CreateUserForm = () => {
           </div>
         </div>
       </section>
+
+      {userCreationType === 'administrative' && (
+        <section className="dark-section">
+          <h3 className="section-title">CONEXIÓN A LA CARPETA DE COLA (SMB)</h3>
+          <p className="note" style={{ marginTop: 0 }}>
+            Comprueba que el backend pueda escribir en la ruta configurada como{' '}
+            <code>AD_QUEUE_UNC</code> (misma prueba que al encolar un usuario administrativo).
+          </p>
+          <button
+            type="button"
+            className="secondary-btn"
+            disabled={queueConnStatus === 'loading'}
+            onClick={handleTestQueueConnection}
+          >
+            {queueConnStatus === 'loading' ? 'Probando conexión…' : 'Probar conexión'}
+          </button>
+          {queueConnStatus === 'success' && queueConnDetail?.ok && (
+            <p className="note success-note">
+              {queueConnDetail.message}
+              {queueConnDetail.uncPath ? (
+                <>
+                  {' '}
+                  Ruta: <code>{queueConnDetail.uncPath}</code>
+                </>
+              ) : null}
+            </p>
+          )}
+          {queueConnStatus === 'error' && queueConnDetail && (
+              <>
+                <p className="error-text" style={{ marginTop: 12 }}>
+                  {queueConnDetail.message}
+                  {queueConnDetail.uncPath ? (
+                    <>
+                      {' '}
+                      (<code>{queueConnDetail.uncPath}</code>)
+                    </>
+                  ) : null}
+                  {queueConnDetail.code ? ` [${queueConnDetail.code}]` : ''}
+                </p>
+                <p className="note" style={{ marginTop: 16 }}>
+                  Pasos recomendados:
+                </p>
+                <ol className="queue-help-steps">
+                  {SMB_QUEUE_HELP_STEPS.map((step, i) => (
+                    <li key={i}>{step}</li>
+                  ))}
+                </ol>
+              </>
+            )}
+        </section>
+      )}
 
       {userCreationType === 'administrative' && (
         <section className="dark-section">

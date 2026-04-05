@@ -97,6 +97,37 @@
   cursor: not-allowed;
 }
 
+.secondary-btn {
+  margin-top: 12px;
+  background: transparent;
+  color: #facc15;
+  border: 1px solid #facc15;
+  border-radius: 14px;
+  padding: 14px 18px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.secondary-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.success-note {
+  color: #86efac;
+}
+
+.queue-help-steps {
+  margin: 8px 0 0;
+  padding-left: 1.25rem;
+  font-size: 13px;
+  color: #94a3b8;
+  line-height: 1.55;
+}
+
+.queue-help-steps li {
+  margin-bottom: 10px;
+}
 
 .success-wrapper {
   max-width: 900px;

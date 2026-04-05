@@ -237,6 +237,10 @@ Mismo cuerpo y respuesta que **`POST /api/users`** (compatibilidad con clientes 
 
 Misma query que `/api/users/next-username`: `givenName`, `surname1`, `surname2` (opcional). Con prechequeo Graph activo, devuelve el primer **sAMAccountName/UPN** libre en el inquilino (misma lógica que operativos). Con `AD_QUEUE_SKIP_GRAPH_PRECHECK`, solo el primer candidato teórico sin consultar Graph.
 
+### GET /api/users/administrative/queue-connection-test
+
+Comprueba que el proceso Node pueda **escribir y borrar** un archivo temporal en **`AD_QUEUE_UNC`** (no exige `AD_QUEUE_EMAIL_DOMAIN`). Respuesta **200** con cuerpo JSON: `ok` (boolean), `message`, y opcionalmente `uncPath` y `code` si falló. Útil para diagnosticar sesión SMB y permisos antes de encolar usuarios; el front-end incluye un botón “Probar conexión” en la pestaña administrativa.
+
 ### POST /api/users/administrative/bulk
 
 Carga masiva de usuarios administrativos con el mismo patrón Excel que operativos (**`multipart/form-data`**, campo **`file`**, `.xlsx` / `.xls`).

@@ -32,6 +32,14 @@ export interface AdQueueCreationAccepted {
   displayName: string;
 }
 
+/** GET /users/administrative/queue-connection-test — prueba escritura en AD_QUEUE_UNC. */
+export interface AdQueueConnectionTestResult {
+  ok: boolean;
+  message: string;
+  uncPath?: string;
+  code?: string;
+}
+
 export interface UserFormData {
   primerNombre: string;
   segundoNombre: string;

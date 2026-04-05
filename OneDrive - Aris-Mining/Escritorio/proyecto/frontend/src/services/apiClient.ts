@@ -4,6 +4,7 @@ import {
   CreateUserResponse,
   NextUsernameResponse,
   AdQueueCreationAccepted,
+  AdQueueConnectionTestResult,
 } from '../types/user';
 
 /**
@@ -128,6 +129,14 @@ export const createAdministrativeUser = async (
     throw error;
   }
 };
+
+export const testAdministrativeQueueConnection =
+  async (): Promise<AdQueueConnectionTestResult> => {
+    const response = await apiClient.get<AdQueueConnectionTestResult>(
+      '/users/administrative/queue-connection-test'
+    );
+    return response.data;
+  };
 
 export const getNextAdministrativeUsername = async (params: {
   givenName: string;

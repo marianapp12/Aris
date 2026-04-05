@@ -5,6 +5,7 @@ import { getGraphClient } from '../config/graphClient.js';
 import {
   enqueueAdUserRequest,
   proposeAdministrativeUsername,
+  testAdQueueUncWrite,
 } from '../services/adQueueUserService.js';
 import {
   AdministrativePrecheckError,
@@ -79,6 +80,14 @@ export const createUserViaAdQueue = async (req, res) => {
 
 /** Alias para compatibilidad con clientes que llaman POST /api/users/administrative */
 export const createAdministrativeUser = createUserViaAdQueue;
+
+/**
+ * GET /api/users/administrative/queue-connection-test — prueba escritura SMB en AD_QUEUE_UNC
+ */
+export const testAdQueueConnection = async (req, res) => {
+  const result = await testAdQueueUncWrite();
+  return res.status(200).json(result);
+};
 
 /**
  * GET /api/users/administrative/next-username — candidato libre vía Graph (o primer candidato si skip prechequeo)

@@ -55,6 +55,47 @@ function mapWriteError(err) {
 }
 
 /**
+ * Prueba escritura en AD_QUEUE_UNC (sin exigir AD_QUEUE_EMAIL_DOMAIN).
+ * @returns {{ ok: true, uncPath: string, message: string } | { ok: false, code: string, uncPath?: string, message: string }}
+ */
+export async function testAdQueueUncWrite() {
+  const { uncPath: rawUnc } = getAdQueueConfig();
+  const uncPath = rawUnc?.trim() || '';
+  if (!uncPath) {
+    return {
+      ok: false,
+      code: 'NOT_CONFIGURED',
+      message:
+        'No está configurada AD_QUEUE_UNC en el entorno del servidor (.env). Defina la ruta UNC de la carpeta pendiente y reinicie el backend.',
+    };
+  }
+
+  const id = randomUUID();
+  const targetPath = joinQueuePath(uncPath, `conexion-prueba-${id}.tmp`);
+
+  try {
+    await fs.writeFile(targetPath, 'ok\n', 'utf8');
+    await fs.unlink(targetPath);
+    return {
+      ok: true,
+      uncPath,
+      message: 'Se pudo escribir y eliminar un archivo de prueba en la cola SMB.',
+    };
+  } catch (e) {
+    const code = e?.code || 'UNKNOWN';
+    const mapped = mapWriteError(e);
+    const message =
+      mapped instanceof Error ? mapped.message : String(mapped?.message || mapped || e);
+    return {
+      ok: false,
+      code,
+      uncPath,
+      message,
+    };
+  }
+}
+
+/**
  * Escribe un JSON por solicitud en la UNC configurada (evita pérdidas por concurrencia).
  * @param {object} body - mismo shape que validateAdministrativePayload (givenName, surname1, …)
  */
