@@ -1,8 +1,10 @@
-import { useState, useMemo, useEffect } from 'react';
-import { UserFormData, UserPreview } from '../types/user';
+import { useState, useMemo, useEffect, useRef } from 'react';
+import { UserFormData, UserPreview, AdQueueRequestResult } from '../types/user';
+import { isAdScriptDuplicateEmployeeIdMessage } from '../utils/adQueueScriptMessages';
 import {
   createOperationalUser,
   createUserViaAdQueue,
+  getAdministrativeQueueRequestResult,
   getNextAvailableUsername,
   getNextAdministrativeUsername,
   testAdministrativeQueueConnection,
@@ -40,6 +42,8 @@ type CreatedUser = {
   id?: string;
   requestId?: string;
   creationType: UserCreationType;
+  /** Alta nueva en cola AD vs actualización de perfil (cédula ya en Graph). */
+  adminQueueAction?: 'create' | 'updateByEmployeeId';
 };
 
 const SMB_QUEUE_HELP_STEPS: string[] = [
@@ -47,6 +51,9 @@ const SMB_QUEUE_HELP_STEPS: string[] = [
   'Revise en el servidor que AD_QUEUE_UNC en el archivo .env del backend sea la ruta correcta (por ejemplo \\\\servidor\\carpeta\\pendiente) y, tras cualquier cambio, reinicie el proceso del backend. En esa misma PC con Windows, pulse Win + R, escriba la misma ruta UNC y pulse Enter; si pide credenciales, use un usuario de dominio o del servidor con permiso de escritura en el recurso compartido.',
   'Vuelva a pulsar “Probar conexión” cuando haya completado los pasos anteriores.',
 ];
+
+const AD_RESULT_POLL_MS = 4000;
+const AD_RESULT_MAX_POLLS = 75;
 
 const CreateUserForm = () => {
   const [userCreationType, setUserCreationType] =
@@ -73,7 +80,14 @@ const CreateUserForm = () => {
   const [bulkStatus, setBulkStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
   const [bulkMessage, setBulkMessage] = useState<string>('');
   const [bulkResults, setBulkResults] = useState<
-    { row: number; status: string; userPrincipalName?: string; displayName?: string; message?: string }[]
+    {
+      row: number;
+      status: string;
+      userPrincipalName?: string;
+      displayName?: string;
+      message?: string;
+      code?: string;
+    }[]
     | null
   >(null);
 
@@ -88,7 +102,10 @@ const CreateUserForm = () => {
       displayName?: string;
       requestId?: string;
       proposedUserName?: string;
+      queueAction?: 'create' | 'updateByEmployeeId';
       message?: string;
+      /** Código de prechequeo / negocio cuando el backend lo envía (p. ej. AdministrativePrecheckError). */
+      code?: string;
     }[]
     | null
   >(null);
@@ -104,6 +121,11 @@ const CreateUserForm = () => {
   } | null>(null);
 
   const [adminSmbGatePassed, setAdminSmbGatePassed] = useState(false);
+
+  const [adScriptResult, setAdScriptResult] = useState<AdQueueRequestResult | null>(null);
+  const [adScriptPollExhausted, setAdScriptPollExhausted] = useState(false);
+  const [adManualCheckLoading, setAdManualCheckLoading] = useState(false);
+  const adPollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const userPreview = useMemo<UserPreview | null>(() => {
     const rawPrimerNombre = formData.primerNombre.trim();
@@ -188,6 +210,111 @@ const CreateUserForm = () => {
     formData.apellido2,
     userCreationType,
   ]);
+
+  useEffect(() => {
+    if (
+      status !== 'success' ||
+      !createdUser?.requestId ||
+      createdUser.creationType !== 'administrative'
+    ) {
+      return undefined;
+    }
+
+    const requestId = createdUser.requestId;
+    let cancelled = false;
+    let pollCount = 0;
+
+    if (adPollTimeoutRef.current) {
+      clearTimeout(adPollTimeoutRef.current);
+      adPollTimeoutRef.current = null;
+    }
+
+    setAdScriptResult(null);
+    setAdScriptPollExhausted(false);
+
+    async function tick() {
+      if (cancelled) return;
+      try {
+        const r = await getAdministrativeQueueRequestResult(requestId);
+        if (cancelled) return;
+        if (r.status === 'success' || r.status === 'error') {
+          setAdScriptResult(r);
+          setAdScriptPollExhausted(false);
+          return;
+        }
+      } catch {
+        // Error de red o 503: reintentar hasta el máximo
+      }
+      pollCount += 1;
+      if (pollCount >= AD_RESULT_MAX_POLLS) {
+        setAdScriptPollExhausted(true);
+        return;
+      }
+      adPollTimeoutRef.current = setTimeout(tick, AD_RESULT_POLL_MS);
+    }
+
+    void tick();
+
+    return () => {
+      cancelled = true;
+      if (adPollTimeoutRef.current) {
+        clearTimeout(adPollTimeoutRef.current);
+        adPollTimeoutRef.current = null;
+      }
+    };
+  }, [status, createdUser?.requestId, createdUser?.creationType]);
+
+  /**
+   * El 202 al encolar trae UPN/usuario propuestos; PowerShell puede asignar otro sAM/UPN.
+   * Cuando el polling recibe success con userPrincipalName/email del archivo resultado-*.json,
+   * alineamos la tarjeta de éxito con lo que quedó en Active Directory.
+   */
+  useEffect(() => {
+    if (!adScriptResult || adScriptResult.status !== 'success') return;
+    if (createdUser?.creationType !== 'administrative') return;
+
+    const upn = adScriptResult.userPrincipalName?.trim();
+    const mail = adScriptResult.email?.trim();
+    const emailDisplay = mail || upn;
+    const sam = adScriptResult.samAccountName?.trim();
+    const userNameFinal =
+      sam ||
+      (upn && upn.includes('@') ? upn.split('@')[0] : '') ||
+      (emailDisplay && emailDisplay.includes('@')
+        ? emailDisplay.split('@')[0]
+        : '');
+
+    if (!emailDisplay && !userNameFinal) return;
+
+    setCreatedUser((prev) => {
+      if (!prev || prev.creationType !== 'administrative') return prev;
+      const nextEmail = emailDisplay || prev.email;
+      const nextUser = userNameFinal || prev.userName;
+      if (nextEmail === prev.email && nextUser === prev.userName) return prev;
+      return { ...prev, email: nextEmail, userName: nextUser };
+    });
+  }, [adScriptResult, createdUser?.creationType]);
+
+  const handleRefreshAdScriptResult = async () => {
+    if (!createdUser?.requestId || createdUser.creationType !== 'administrative') return;
+    setAdManualCheckLoading(true);
+    try {
+      const r = await getAdministrativeQueueRequestResult(createdUser.requestId);
+      if (r.status === 'success' || r.status === 'error') {
+        setAdScriptResult(r);
+        setAdScriptPollExhausted(false);
+      }
+    } catch (e) {
+      setAdScriptResult({
+        status: 'error',
+        message:
+          e instanceof Error ? e.message : 'No se pudo consultar el estado en Active Directory.',
+        requestId: createdUser.requestId,
+      });
+    } finally {
+      setAdManualCheckLoading(false);
+    }
+  };
 
   const validateField = (name: keyof UserFormData, value: string): string => {
     if (name === 'cedula') {
@@ -324,7 +451,11 @@ const CreateUserForm = () => {
 
       setBulkStatus('done');
       setBulkMessage(
-        `Carga completada: ${successCount} usuarios creados, ${errorCount} con error.`
+        successCount === 0 && errorCount > 0
+          ? `Ningún usuario creado (${errorCount} fila(s) con error). Abajo verá el motivo por fila.`
+          : errorCount > 0
+            ? `Resumen: ${successCount} creado(s), ${errorCount} con error (detalle en la lista).`
+            : `Carga completada: ${successCount} usuario(s) creado(s) en Microsoft 365.`
       );
       setBulkResults(resultsArray);
     } catch (err) {
@@ -362,7 +493,11 @@ const CreateUserForm = () => {
 
       setBulkAdminStatus('done');
       setBulkAdminMessage(
-        `Carga completada: ${successCount} solicitudes encoladas, ${errorCount} con error.`
+        successCount === 0 && errorCount > 0
+          ? `Ninguna solicitud encolada (${errorCount} fila(s) rechazada(s)). Abajo verá el motivo por fila.`
+          : errorCount > 0
+            ? `Resumen: ${successCount} encolada(s), ${errorCount} con error (detalle en la lista).`
+            : `Carga completada: ${successCount} solicitud(es) encolada(s).`
       );
       setBulkAdminResults(resultsArray);
     } catch (err) {
@@ -449,12 +584,16 @@ const CreateUserForm = () => {
         setStatus('success');
       } else {
         const accepted = await createUserViaAdQueue(payload);
+        const upn = accepted.userPrincipalName ?? '';
+        const localPart = upn.includes('@') ? upn.split('@')[0] : '';
+        const resolvedUserName = accepted.proposedUserName ?? (localPart || '—');
         setCreatedUser({
           displayName: accepted.displayName,
-          userName: accepted.proposedUserName,
-          email: accepted.userPrincipalName,
+          userName: resolvedUserName,
+          email: upn || '—',
           requestId: accepted.requestId,
           creationType: 'administrative',
+          adminQueueAction: accepted.queueAction ?? 'create',
         });
         setStatus('success');
       }
@@ -467,6 +606,13 @@ const CreateUserForm = () => {
   };
 
   const handleCreateAnother = () => {
+    if (adPollTimeoutRef.current) {
+      clearTimeout(adPollTimeoutRef.current);
+      adPollTimeoutRef.current = null;
+    }
+    setAdScriptResult(null);
+    setAdScriptPollExhausted(false);
+    setAdManualCheckLoading(false);
     setCreatedUser(null);
     setStatus('idle');
     setErrorMessage('');
@@ -491,57 +637,64 @@ const CreateUserForm = () => {
     });
   };
 
-  // Vista de éxito para carga masiva administrativa (cola AD)
-  if (bulkAdminResults && bulkAdminResults.some((r) => r.status === 'success')) {
-    const created = bulkAdminResults.filter((r) => r.status === 'success');
+  /**
+   * Carga masiva administrativa sin ningún encolado: el backend sí devuelve `message` por fila,
+   * pero antes no había pantalla dedicada (solo el resumen en el formulario).
+   */
+  if (
+    bulkAdminResults &&
+    bulkAdminResults.length > 0 &&
+    !bulkAdminResults.some((r) => r.status === 'success')
+  ) {
     const failed = bulkAdminResults.filter((r) => r.status === 'error');
+    const rows = failed.length > 0 ? failed : bulkAdminResults;
 
     return (
       <div className="success-wrapper">
-        <div className="success-card">
-          <div className="success-icon">✓</div>
+        <div className="success-card bulk-admin-report-card">
+          <div className="bulk-admin-report-icon bulk-admin-report-icon--warn" aria-hidden>
+            !
+          </div>
 
-          <h2 className="success-title">Solicitudes administrativas encoladas</h2>
+          <h2 className="success-title">Ninguna solicitud encolada</h2>
 
           <p className="success-subtitle">
-            Se encolaron {created.length} usuarios para creación en Active Directory (archivos JSON en
-            la carpeta compartida). El procesamiento en el servidor puede tardar varios minutos.
+            Se procesaron {rows.length} fila(s) del Excel y ninguna pasó la validación o el
+            prechequeo para escribir en la cola. Revise el motivo de cada fila, corrija el archivo y
+            vuelva a cargar.
           </p>
 
-          <div className="success-table">
-            {created.map((u, index) => (
-              <div className="success-row" key={`admin-bulk-${index}`}>
-                <span className="success-label">FILA {u.row}</span>
-                <span className="success-value">
-                  {u.displayName} — {u.userPrincipalName}
-                  {u.requestId ? ` — ID: ${u.requestId}` : ''}
+          <h3 className="bulk-admin-section-heading">Detalle por fila del Excel</h3>
+          <div className="bulk-admin-table-scroll">
+            <div className="bulk-admin-grid bulk-admin-grid--head" role="row">
+              <span>Fila</span>
+              <span>Motivo</span>
+              <span>Código</span>
+            </div>
+            {rows.map((u, index) => (
+              <div
+                className="bulk-admin-grid bulk-admin-grid--row"
+                key={`admin-bulk-all-err-${index}`}
+                role="row"
+              >
+                <span className="bulk-admin-cell-fila">{u.row}</span>
+                <span className="bulk-admin-cell-msg">
+                  {u.message || 'Error al encolar la solicitud.'}
+                </span>
+                <span className="bulk-admin-cell-code">
+                  {u.code?.trim() || '—'}
                 </span>
               </div>
             ))}
           </div>
 
-          {failed.length > 0 && (
-            <>
-              <h3 className="success-subtitle">Registros con error ({failed.length})</h3>
-              <div className="success-table">
-                {failed.map((u, index) => (
-                  <div className="success-row" key={`admin-bulk-err-${index}`}>
-                    <span className="success-label">FILA {u.row}</span>
-                    <span className="success-value">
-                      {u.message || 'Error al encolar la solicitud.'}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-
           <div className="success-note">
-            La contraseña y la creación final en AD las aplica el script en el servidor. Revise la
-            carpeta <code>error</code> en el share si alguna fila falló tras el envío.
+            Causas frecuentes: cédula ya registrada en Microsoft 365 o en la carpeta de procesados,
+            duplicado en archivos pendientes, o fallo al escribir en la ruta SMB del servidor.
           </div>
 
           <button
+            type="button"
             className="primary-btn"
             onClick={() => {
               setBulkAdminResults(null);
@@ -560,7 +713,199 @@ const CreateUserForm = () => {
     );
   }
 
-  // Vista de éxito para carga masiva de usuarios operativos
+  // Vista de éxito para carga masiva administrativa (cola AD) — al menos una fila encolada
+  if (bulkAdminResults && bulkAdminResults.some((r) => r.status === 'success')) {
+    const created = bulkAdminResults.filter((r) => r.status === 'success');
+    const failed = bulkAdminResults.filter((r) => r.status === 'error');
+    const bulkCreates = created.filter((r) => r.queueAction !== 'updateByEmployeeId');
+    const bulkUpdates = created.filter((r) => r.queueAction === 'updateByEmployeeId');
+
+    return (
+      <div className="success-wrapper">
+        <div className="success-card">
+          <div className="success-icon">✓</div>
+
+          <h2 className="success-title">Solicitudes administrativas encoladas</h2>
+
+          <p className="success-subtitle">
+            {bulkCreates.length > 0 && (
+              <>
+                {bulkCreates.length} alta(s) nueva(s) en cola para Active Directory.{' '}
+              </>
+            )}
+            {bulkUpdates.length > 0 && (
+              <>
+                {bulkUpdates.length} actualización(es) de perfil (cédula ya existente en Microsoft
+                365).{' '}
+              </>
+            )}
+            Archivos JSON en la carpeta compartida; el procesamiento en el servidor puede tardar
+            varios minutos.
+          </p>
+
+          <h3 className="bulk-admin-section-heading">Solicitudes encoladas correctamente</h3>
+          {created.map((u, index) => (
+            <div className="bulk-admin-result-group" key={`admin-bulk-${index}`}>
+              <div className="bulk-admin-result-group-title">
+                Fila {u.row} —{' '}
+                {u.queueAction === 'updateByEmployeeId'
+                  ? 'Actualización de perfil'
+                  : 'Alta nueva en Active Directory'}
+              </div>
+              <div className="success-table">
+                <div className="success-row">
+                  <span className="success-label">NOMBRE (DISPLAY)</span>
+                  <span className="success-value">{u.displayName ?? '—'}</span>
+                </div>
+                {u.queueAction !== 'updateByEmployeeId' ? (
+                  <>
+                    <div className="success-row">
+                      <span className="success-label">UPN PROPUESTO (COLA)</span>
+                      <span className="success-value highlight">
+                        {u.userPrincipalName ?? '—'}
+                      </span>
+                    </div>
+                    <div className="success-row">
+                      <span className="success-label">USUARIO (sAM) PROPUESTO</span>
+                      <span className="success-value">{u.proposedUserName ?? '—'}</span>
+                    </div>
+                  </>
+                ) : (
+                  u.userPrincipalName && (
+                    <div className="success-row">
+                      <span className="success-label">UPN CONOCIDO</span>
+                      <span className="success-value highlight">{u.userPrincipalName}</span>
+                    </div>
+                  )
+                )}
+                <div className="success-row">
+                  <span className="success-label">ID DE SOLICITUD</span>
+                  <span className="success-value mono">{u.requestId ?? '—'}</span>
+                </div>
+              </div>
+            </div>
+          ))}
+
+          {failed.length > 0 && (
+            <>
+              <h3 className="bulk-admin-section-heading">
+                Registros con error ({failed.length})
+              </h3>
+              <div className="bulk-admin-table-scroll">
+                <div className="bulk-admin-grid bulk-admin-grid--head" role="row">
+                  <span>Fila</span>
+                  <span>Motivo</span>
+                  <span>Código</span>
+                </div>
+                {failed.map((u, index) => (
+                  <div
+                    className="bulk-admin-grid bulk-admin-grid--row"
+                    key={`admin-bulk-err-${index}`}
+                    role="row"
+                  >
+                    <span className="bulk-admin-cell-fila">{u.row}</span>
+                    <span className="bulk-admin-cell-msg">
+                      {u.message || 'Error al encolar la solicitud.'}
+                    </span>
+                    <span className="bulk-admin-cell-code">
+                      {u.code?.trim() || '—'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          <div className="success-note">
+            La contraseña y la creación final en AD las aplica el script en el servidor. Revise la
+            carpeta <code>error</code> en el share si alguna fila falló tras el envío.
+          </div>
+
+          <button
+            type="button"
+            className="primary-btn"
+            onClick={() => {
+              setBulkAdminResults(null);
+              setBulkAdminFile(null);
+              setBulkAdminStatus('idle');
+              setBulkAdminMessage('');
+              setAdminSmbGatePassed(false);
+              setQueueConnStatus('idle');
+              setQueueConnDetail(null);
+            }}
+          >
+            Volver al formulario
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  /** Carga masiva operativa: todas las filas fallaron — mismo problema que administrativa (detalle oculto). */
+  if (
+    bulkResults &&
+    bulkResults.length > 0 &&
+    !bulkResults.some((r) => r.status === 'success')
+  ) {
+    const failed = bulkResults.filter((r) => r.status === 'error');
+    const rows = failed.length > 0 ? failed : bulkResults;
+
+    return (
+      <div className="success-wrapper">
+        <div className="success-card bulk-admin-report-card">
+          <div className="bulk-admin-report-icon bulk-admin-report-icon--warn" aria-hidden>
+            !
+          </div>
+
+          <h2 className="success-title">Ningún usuario creado</h2>
+
+          <p className="success-subtitle">
+            Se procesaron {rows.length} fila(s) y ninguna pudo crearse en Microsoft 365. Revise el
+            motivo de cada fila.
+          </p>
+
+          <h3 className="bulk-admin-section-heading">Detalle por fila del Excel</h3>
+          <div className="bulk-admin-table-scroll">
+            <div className="bulk-admin-grid bulk-admin-grid--head" role="row">
+              <span>Fila</span>
+              <span>Motivo</span>
+              <span>Código</span>
+            </div>
+            {rows.map((u, index) => (
+              <div
+                className="bulk-admin-grid bulk-admin-grid--row"
+                key={`op-bulk-all-err-${index}`}
+                role="row"
+              >
+                <span className="bulk-admin-cell-fila">{u.row}</span>
+                <span className="bulk-admin-cell-msg">
+                  {u.message || 'Error al crear el usuario.'}
+                </span>
+                <span className="bulk-admin-cell-code">
+                  {u.code?.trim() || '—'}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          <button
+            type="button"
+            className="primary-btn"
+            onClick={() => {
+              setBulkResults(null);
+              setBulkFile(null);
+              setBulkStatus('idle');
+              setBulkMessage('');
+            }}
+          >
+            Volver al formulario
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Vista de éxito para carga masiva de usuarios operativos (al menos uno creado)
   if (bulkResults && bulkResults.some((r) => r.status === 'success')) {
     const created = bulkResults.filter((r) => r.status === 'success');
     const failed = bulkResults.filter((r) => r.status === 'error');
@@ -575,35 +920,53 @@ const CreateUserForm = () => {
           </h2>
 
           <p className="success-subtitle">
-            Se han creado {created.length} usuarios en Microsoft 365.
+            Se han creado {created.length} usuario(s) en Microsoft 365.
           </p>
 
-          <div className="success-table">
-            {created.map((u, index) => (
-              <div className="success-row" key={`success-${index}`}>
-                <span className="success-label">
-                  USUARIO {index + 1}
-                </span>
-                <span className="success-value">
-                  {u.displayName} — {u.userPrincipalName}
-                </span>
+          <h3 className="bulk-admin-section-heading">Usuarios creados</h3>
+          {created.map((u, index) => (
+            <div className="bulk-admin-result-group" key={`success-${index}`}>
+              <div className="bulk-admin-result-group-title">
+                Fila {u.row} — Usuario {index + 1}
               </div>
-            ))}
-          </div>
+              <div className="success-table">
+                <div className="success-row">
+                  <span className="success-label">NOMBRE COMPLETO</span>
+                  <span className="success-value">{u.displayName ?? '—'}</span>
+                </div>
+                <div className="success-row">
+                  <span className="success-label">UPN / CORREO</span>
+                  <span className="success-value highlight">
+                    {u.userPrincipalName ?? '—'}
+                  </span>
+                </div>
+              </div>
+            </div>
+          ))}
 
           {failed.length > 0 && (
             <>
-              <h3 className="success-subtitle">
+              <h3 className="bulk-admin-section-heading">
                 Registros con error ({failed.length})
               </h3>
-              <div className="success-table">
+              <div className="bulk-admin-table-scroll">
+                <div className="bulk-admin-grid bulk-admin-grid--head" role="row">
+                  <span>Fila</span>
+                  <span>Motivo</span>
+                  <span>Código</span>
+                </div>
                 {failed.map((u, index) => (
-                  <div className="success-row" key={`error-${index}`}>
-                    <span className="success-label">
-                      FILA {u.row}
-                    </span>
-                    <span className="success-value">
+                  <div
+                    className="bulk-admin-grid bulk-admin-grid--row"
+                    key={`error-${index}`}
+                    role="row"
+                  >
+                    <span className="bulk-admin-cell-fila">{u.row}</span>
+                    <span className="bulk-admin-cell-msg">
                       {u.message || 'Error al crear el usuario.'}
+                    </span>
+                    <span className="bulk-admin-cell-code">
+                      {u.code?.trim() || '—'}
                     </span>
                   </div>
                 ))}
@@ -617,6 +980,7 @@ const CreateUserForm = () => {
           </div>
 
           <button
+            type="button"
             className="primary-btn"
             onClick={() => {
               setBulkResults(null);
@@ -634,6 +998,10 @@ const CreateUserForm = () => {
 
   // Vista de éxito para creación individual
   if (status === 'success' && createdUser) {
+    const isAdminProfileUpdate =
+      createdUser.creationType === 'administrative' &&
+      createdUser.adminQueueAction === 'updateByEmployeeId';
+
     return (
       <div className="success-wrapper">
         <div className="success-card">
@@ -642,13 +1010,17 @@ const CreateUserForm = () => {
 
           <h2 className="success-title">
             {createdUser.creationType === 'administrative'
-              ? 'Solicitud encolada'
+              ? isAdminProfileUpdate
+                ? 'Actualización encolada'
+                : 'Solicitud encolada'
               : 'Usuario creado exitosamente'}
           </h2>
 
           <p className="success-subtitle">
             {createdUser.creationType === 'administrative'
-              ? 'La solicitud se guardó en la cola del servidor. El usuario se creará en Active Directory en breve y llegará a Microsoft 365 mediante Azure AD Connect; puede tardar varios minutos.'
+              ? isAdminProfileUpdate
+                ? 'La solicitud de actualización de datos se aplicará en Active Directory cuando el servidor procese el archivo; Azure AD Connect sincronizará los cambios con Microsoft 365 y puede tardar varios minutos.'
+                : 'La solicitud se guardó en la cola del servidor. El usuario se creará en Active Directory en breve y llegará a Microsoft 365 mediante Azure AD Connect; puede tardar varios minutos.'
               : 'El usuario debe cambiar su contraseña en el primer inicio de sesión.'}
           </p>
 
@@ -688,11 +1060,19 @@ const CreateUserForm = () => {
 
           <div className="success-note">
             {createdUser.creationType === 'administrative' ? (
-              <>
-                La contraseña inicial la define el script de Active Directory en el servidor. El
-                nombre de usuario mostrado es la propuesta enviada en la cola; si ya existía en AD,
-                el servidor puede asignar otro.
-              </>
+              isAdminProfileUpdate ? (
+                <>
+                  Se actualizarán en Active Directory los datos enviados (nombre, apellidos, puesto,
+                  departamento y ciudad si aplica). La cuenta y la contraseña existentes no cambian por
+                  esta solicitud.
+                </>
+              ) : (
+                <>
+                  La contraseña inicial la define el script de Active Directory en el servidor. La
+                  fila UPN/correo y usuario se actualizan solas cuando el script confirma el éxito,
+                  para mostrar el sAM y UPN finales (pueden diferir de la propuesta del alta).
+                </>
+              )
             ) : (
               <>
                 <strong>Contraseña inicial ({INITIAL_PASSWORD_M365}):</strong> el usuario deberá
@@ -700,6 +1080,86 @@ const CreateUserForm = () => {
               </>
             )}
           </div>
+
+          {createdUser.creationType === 'administrative' && createdUser.requestId ? (
+            <div className="ad-queue-result-block" style={{ marginTop: 20 }}>
+              <h4 className="section-title" style={{ fontSize: '0.95rem', marginBottom: 8 }}>
+                Resultado en Active Directory
+              </h4>
+              {!adScriptResult && !adScriptPollExhausted ? (
+                <p className="note" style={{ marginTop: 0 }}>
+                  Consultando si el script del servidor ya procesó la solicitud…
+                </p>
+              ) : null}
+              {adScriptPollExhausted && !adScriptResult ? (
+                <p className="note" style={{ marginTop: 0 }}>
+                  No hubo respuesta en el tiempo de espera automático (unos 5 minutos). Ejecute el
+                  script en el servidor si aún no lo hizo o pulse «Comprobar estado».
+                </p>
+              ) : null}
+              {adScriptResult?.status === 'success' ? (
+                <p className="note success-note" style={{ marginTop: 0 }}>
+                  {adScriptResult.message}
+                  {adScriptResult.samAccountName ? (
+                    <>
+                      {' '}
+                      <strong>Cuenta AD (sAM):</strong> {adScriptResult.samAccountName}
+                    </>
+                  ) : null}
+                  {adScriptResult.userPrincipalName ? (
+                    <>
+                      {' '}
+                      <strong>UPN:</strong> {adScriptResult.userPrincipalName}
+                    </>
+                  ) : null}
+                  {adScriptResult.email &&
+                  adScriptResult.email !== adScriptResult.userPrincipalName ? (
+                    <>
+                      {' '}
+                      <strong>Correo:</strong> {adScriptResult.email}
+                    </>
+                  ) : null}
+                  {adScriptResult.processedAt ? (
+                    <span className="mono"> — {adScriptResult.processedAt}</span>
+                  ) : null}
+                </p>
+              ) : null}
+              {adScriptResult?.status === 'error' ? (
+                <div style={{ marginTop: 0 }}>
+                  {isAdScriptDuplicateEmployeeIdMessage(adScriptResult.message) ? (
+                    <>
+                      <p className="error-text" style={{ marginTop: 0, marginBottom: 8 }}>
+                        <strong>Cédula duplicada en Active Directory.</strong>
+                      </p>
+                      <p className="error-text" style={{ marginTop: 0 }}>
+                        {adScriptResult.message}
+                      </p>
+                      <p className="note" style={{ marginTop: 10 }}>
+                        Este rechazo proviene del directorio local (AD), no de la validación previa en
+                        Microsoft 365. Si la cédula acaba de usarse, Graph puede tardar varios minutos
+                        en reflejarla tras Azure AD Connect; puede configurar el prechequeo LDAP en el
+                        servidor (variables AD_LDAP_* en el .env del backend) para detectar duplicados
+                        antes de encolar.
+                      </p>
+                    </>
+                  ) : (
+                    <p className="error-text" style={{ marginTop: 0 }}>
+                      {adScriptResult.message}
+                    </p>
+                  )}
+                </div>
+              ) : null}
+              <button
+                type="button"
+                className="secondary-btn"
+                disabled={adManualCheckLoading}
+                onClick={handleRefreshAdScriptResult}
+                style={{ marginTop: 10 }}
+              >
+                {adManualCheckLoading ? 'Consultando…' : 'Comprobar estado'}
+              </button>
+            </div>
+          ) : null}
 
           <button className="primary-btn" onClick={handleCreateAnother}>
             Crear otro usuario

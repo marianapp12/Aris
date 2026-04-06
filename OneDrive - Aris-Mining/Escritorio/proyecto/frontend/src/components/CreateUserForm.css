@@ -255,3 +255,106 @@
   color: #0388a6;
   background: #1a2d4a;
 }
+
+/* —— Carga masiva: informe por filas (éxitos agrupados + tabla de errores) —— */
+.bulk-admin-report-card .bulk-admin-report-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  font-weight: 700;
+  margin-bottom: 20px;
+}
+
+.bulk-admin-report-icon--warn {
+  background: rgba(245, 158, 11, 0.25);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.45);
+}
+
+.bulk-admin-section-heading {
+  font-size: 12px;
+  letter-spacing: 1.5px;
+  color: #94a3b8;
+  margin: 20px 0 12px;
+}
+
+.bulk-admin-result-group {
+  margin-bottom: 18px;
+}
+
+.bulk-admin-result-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: #0388a6;
+  margin-bottom: 8px;
+}
+
+.bulk-admin-table-scroll {
+  max-height: min(420px, 55vh);
+  overflow: auto;
+  border-radius: 12px;
+  border: 1px solid rgba(3, 136, 166, 0.22);
+  background: #0f1829;
+  margin-bottom: 20px;
+}
+
+.bulk-admin-grid {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) minmax(88px, 120px);
+  gap: 12px;
+  align-items: start;
+  padding: 12px 16px;
+  font-size: 13px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.bulk-admin-grid:last-child {
+  border-bottom: none;
+}
+
+.bulk-admin-grid--head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #152238;
+  font-size: 10px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: #64748b;
+  font-weight: 600;
+}
+
+.bulk-admin-grid--row .bulk-admin-cell-fila {
+  font-weight: 600;
+  color: #e8ecf2;
+}
+
+.bulk-admin-cell-msg {
+  color: #e8ecf2;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.bulk-admin-cell-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  color: #64748b;
+  word-break: break-all;
+}
+
+@media (max-width: 640px) {
+  .bulk-admin-grid {
+    grid-template-columns: 56px minmax(0, 1fr);
+  }
+
+  .bulk-admin-grid--head span:nth-child(3),
+  .bulk-admin-grid--row .bulk-admin-cell-code {
+    grid-column: 1 / -1;
+    padding-top: 4px;
+  }
+}

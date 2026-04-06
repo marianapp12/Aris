@@ -3,6 +3,7 @@ import multer from 'multer';
 import {
   createAdministrativeUser,
   createAdministrativeUsersBulk,
+  getAdministrativeQueueRequestResult,
   getNextAdministrativeUsername,
   testAdQueueConnection,
 } from '../controllers/administrativeUsersController.js';
@@ -26,6 +27,14 @@ router.get('/administrative/queue-connection-test', testAdQueueConnection);
  * GET /api/users/administrative/next-username
  */
 router.get('/administrative/next-username', getNextAdministrativeUsername);
+
+/**
+ * GET /api/users/administrative/queue-requests/:requestId/result
+ */
+router.get(
+  '/administrative/queue-requests/:requestId/result',
+  getAdministrativeQueueRequestResult
+);
 
 /**
  * POST /api/users/administrative — mismo comportamiento que POST /api/users (compatibilidad)

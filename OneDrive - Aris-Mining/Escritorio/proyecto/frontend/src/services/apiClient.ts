@@ -5,6 +5,7 @@ import {
   NextUsernameResponse,
   AdQueueCreationAccepted,
   AdQueueConnectionTestResult,
+  AdQueueRequestResult,
 } from '../types/user';
 
 /**
@@ -137,6 +138,85 @@ export const testAdministrativeQueueConnection =
     );
     return response.data;
   };
+
+function pickString(obj: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const k of keys) {
+    const v = obj[k];
+    if (typeof v === 'string' && v.trim()) return v;
+  }
+  return undefined;
+}
+
+/** Mensaje legible desde cuerpos JSON de error del backend (message / error). */
+function extractApiErrorBody(data: unknown, fallback: string): string {
+  if (data && typeof data === 'object') {
+    const o = data as Record<string, unknown>;
+    const msg = pickString(o, 'message', 'Message', 'error', 'Error');
+    if (msg) return msg;
+  }
+  return fallback;
+}
+
+/**
+ * Estado del job en AD: lee resultado-{requestId}.json (carpeta resultados del UNC).
+ * Incluye samAccountName, userPrincipalName y email finales cuando status === 'success'.
+ */
+export const getAdministrativeQueueRequestResult = async (
+  requestId: string
+): Promise<AdQueueRequestResult> => {
+  const response = await apiClient.get(
+    `/users/administrative/queue-requests/${encodeURIComponent(requestId)}/result`,
+    { validateStatus: () => true }
+  );
+  const d = response.data as unknown;
+
+  if (response.status === 200 && d && typeof d === 'object') {
+    const o = d as Record<string, unknown>;
+    const st = o.status ?? o.Status;
+    if (st === 'pending' || st === 'success' || st === 'error') {
+      const msg =
+        pickString(o, 'message', 'Message') ||
+        (st === 'pending'
+          ? 'Pendiente de procesamiento.'
+          : 'Sin mensaje del servidor.');
+      return {
+        status: st,
+        message: msg,
+        requestId: pickString(o, 'requestId', 'RequestId') ?? requestId,
+        processedAt: pickString(o, 'processedAt', 'ProcessedAt'),
+        queueAction: pickString(o, 'queueAction', 'QueueAction'),
+        samAccountName: pickString(o, 'samAccountName', 'SamAccountName'),
+        userPrincipalName: pickString(
+          o,
+          'userPrincipalName',
+          'UserPrincipalName'
+        ),
+        email: pickString(o, 'email', 'Email', 'mail', 'Mail'),
+      };
+    }
+  }
+
+  if (response.status === 503) {
+    throw new Error(
+      extractApiErrorBody(
+        d,
+        'Configure AD_QUEUE_UNC o AD_QUEUE_RESULTS_UNC en el servidor para consultar resultados.'
+      )
+    );
+  }
+  if (response.status === 400) {
+    throw new Error(
+      extractApiErrorBody(d, 'Identificador de solicitud inválido.')
+    );
+  }
+
+  throw new Error(
+    extractApiErrorBody(
+      d,
+      `El servidor respondió con código ${response.status} al consultar el estado en Active Directory.`
+    )
+  );
+};
 
 export const getNextAdministrativeUsername = async (params: {
   givenName: string;

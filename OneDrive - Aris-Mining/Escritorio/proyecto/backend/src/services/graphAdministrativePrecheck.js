@@ -1,32 +1,18 @@
 import { getGraphClient } from '../config/graphClient.js';
 import {
-  iterateLocalPartCandidates,
-  truncateForSamAccountName,
-} from '../utils/adUsernameHelpers.js';
+  pickFirstAvailableSamAndUpn,
+  NO_UPN_CANDIDATES_EXHAUSTED,
+  escapeODataSingleQuote,
+} from './graphUpnCandidatePicker.js';
+import { pickFirstAvailableSamAndUpnForAdQueue } from './adLdapSamAccountPick.js';
+import {
+  AdministrativePrecheckError,
+  PRECHECK_CODES,
+} from './administrativePrecheckErrors.js';
 
-export const PRECHECK_CODES = {
-  EMPLOYEE_ID_IN_USE: 'EMPLOYEE_ID_IN_USE',
-  GRAPH_UNAVAILABLE: 'GRAPH_UNAVAILABLE',
-  NO_UPN_AVAILABLE: 'NO_UPN_AVAILABLE',
-};
+export { AdministrativePrecheckError, PRECHECK_CODES } from './administrativePrecheckErrors.js';
 
-export class AdministrativePrecheckError extends Error {
-  /**
-   * @param {string} code
-   * @param {string} message
-   * @param {number} httpStatus
-   */
-  constructor(code, message, httpStatus) {
-    super(message);
-    this.name = 'AdministrativePrecheckError';
-    this.code = code;
-    this.httpStatus = httpStatus;
-  }
-}
-
-export function escapeODataSingleQuote(value) {
-  return String(value).replace(/'/g, "''");
-}
+export { escapeODataSingleQuote };
 
 /**
  * @param {import('@microsoft/microsoft-graph-client').Client} graphClient
@@ -43,84 +29,73 @@ export async function findUserByEmployeeId(graphClient, employeeId) {
 }
 
 /**
- * @param {import('@microsoft/microsoft-graph-client').Client} graphClient
- * @param {string} userPrincipalName
- * @param {string} mailNickname sAM / local part
+ * @returns {Promise<object|undefined>} usuario si hay exactamente uno; undefined si ninguno.
+ * @throws {AdministrativePrecheckError} si hay más de un usuario con la misma cédula en Graph.
  */
-export async function isUpnOrMailNicknameTaken(graphClient, userPrincipalName, mailNickname) {
-  const upnEsc = escapeODataSingleQuote(userPrincipalName);
-  const r1 = await graphClient
-    .api(`/users?$filter=userPrincipalName eq '${upnEsc}'&$select=id&$top=1`)
-    .get();
-  if (r1?.value?.length) return true;
-  const nickEsc = escapeODataSingleQuote(mailNickname);
-  const r2 = await graphClient
-    .api(`/users?$filter=mailNickname eq '${nickEsc}'&$select=id&$top=1`)
-    .get();
-  return Boolean(r2?.value?.length);
+export async function getExistingUserByEmployeeIdOrThrowIfAmbiguous(graphClient, employeeId) {
+  const escaped = escapeODataSingleQuote(employeeId.trim());
+  const path = `/users?$filter=employeeId eq '${escaped}'&$select=id,userPrincipalName,employeeId&$top=2`;
+  const response = await graphClient.api(path).get();
+  const list = response?.value || [];
+  if (list.length > 1) {
+    throw new AdministrativePrecheckError(
+      PRECHECK_CODES.EMPLOYEE_ID_AMBIGUOUS,
+      'Hay más de un usuario con esta cédula / ID en Microsoft 365; corrija el directorio antes de continuar.',
+      409
+    );
+  }
+  return list[0] || undefined;
 }
 
 /**
- * Misma secuencia de candidatos que operativos (Graph); primer sam/UPN libre en el inquilino.
+ * Alta administrativa nueva: la cédula no debe existir ya en Graph (employeeId).
+ * @param {import('@microsoft/microsoft-graph-client').Client} graphClient
+ * @param {string} employeeId
+ * @throws {AdministrativePrecheckError} EMPLOYEE_ID_IN_USE | EMPLOYEE_ID_AMBIGUOUS
+ */
+export async function assertEmployeeIdAvailableForNewAdministrativeUser(graphClient, employeeId) {
+  const existing = await getExistingUserByEmployeeIdOrThrowIfAmbiguous(graphClient, employeeId);
+  if (!existing) return;
+  const upn = existing.userPrincipalName?.trim();
+  const upnHint = upn
+    ? ` Cuenta existente: ${upn}.`
+    : ' Ya existe una cuenta con este id. de empleado en el directorio.';
+  throw new AdministrativePrecheckError(
+    PRECHECK_CODES.EMPLOYEE_ID_IN_USE,
+    `La cédula / ID ingresada ya está registrada en Microsoft 365 (campo id. de empleado). No puede darse de alta otra persona con el mismo documento.${upnHint}`,
+    409
+  );
+}
+
+export { isUpnOrMailNicknameTaken } from './graphUpnCandidatePicker.js';
+
+/**
+ * Operativos / vistas que siguen consultando Graph para UPN (Microsoft 365).
  * @param {import('@microsoft/microsoft-graph-client').Client} graphClient
  * @param {{ givenName: string, surname1: string, surname2?: string, emailDomain: string }} params
  */
 export async function pickAvailableSamAndUpn(graphClient, params) {
-  const { givenName, surname1, surname2, emailDomain } = params;
-  const s2 = surname2?.trim() || '';
-  for (const localPartRaw of iterateLocalPartCandidates(
-    givenName.trim(),
-    surname1.trim(),
-    s2 || undefined
-  )) {
-    const sam = truncateForSamAccountName(localPartRaw);
-    const userPrincipalName = `${sam}@${emailDomain}`;
-    const taken = await isUpnOrMailNicknameTaken(graphClient, userPrincipalName, sam);
-    if (!taken) {
-      return { samAccountName: sam, userPrincipalName };
+  try {
+    return await pickFirstAvailableSamAndUpn(graphClient, params);
+  } catch (err) {
+    if (err?.code === NO_UPN_CANDIDATES_EXHAUSTED) {
+      throw new AdministrativePrecheckError(
+        PRECHECK_CODES.NO_UPN_AVAILABLE,
+        'No quedó disponible ningún nombre de cuenta (UPN / alias de correo) con las variantes permitidas: todas están ocupadas en Microsoft 365. Es colisión de nombre de cuenta técnico, no duplicidad de la cédula / id. de empleado. Pruebe otro orden de nombres o solicite a TI liberar un alias.',
+        422
+      );
     }
-  }
-  throw new AdministrativePrecheckError(
-    PRECHECK_CODES.NO_UPN_AVAILABLE,
-    'No se pudo generar un nombre de usuario único (correo/UPN) tras agotar las variantes permitidas',
-    422
-  );
-}
-
-/**
- * @param {import('@microsoft/microsoft-graph-client').Client} graphClient
- * @param {string} employeeId
- */
-export async function assertEmployeeIdAvailable(graphClient, employeeId) {
-  const existing = await findUserByEmployeeId(graphClient, employeeId);
-  if (existing) {
-    throw new AdministrativePrecheckError(
-      PRECHECK_CODES.EMPLOYEE_ID_IN_USE,
-      'Ya existe un usuario con esta cédula / ID en el directorio (Microsoft 365).',
-      409
-    );
+    throw err;
   }
 }
 
 /**
- * Prechequeo completo para cola AD: ID libre + sam/UPN libre.
- * @param {{ givenName: string, surname1: string, surname2?: string, employeeId: string, emailDomain: string }} params
+ * Propuesta de sAM/UPN para cola AD: misma secuencia que operativos, disponibilidad contra AD (LDAP).
+ * @param {{ givenName: string, surname1: string, surname2?: string, emailDomain: string }} params
  */
 export async function runAdministrativeGraphPrecheck(params) {
-  let graphClient;
   try {
-    graphClient = getGraphClient();
-  } catch (e) {
-    throw new AdministrativePrecheckError(
-      PRECHECK_CODES.GRAPH_UNAVAILABLE,
-      e?.message || 'No se pudo inicializar Microsoft Graph (revise AZURE_* en .env).',
-      503
-    );
-  }
-
-  try {
-    await assertEmployeeIdAvailable(graphClient, params.employeeId);
-    return await pickAvailableSamAndUpn(graphClient, {
+    return await pickFirstAvailableSamAndUpnForAdQueue({
       givenName: params.givenName,
       surname1: params.surname1,
       surname2: params.surname2,
@@ -129,10 +104,10 @@ export async function runAdministrativeGraphPrecheck(params) {
   } catch (err) {
     if (err instanceof AdministrativePrecheckError) throw err;
     const msg = err?.message || String(err);
-    console.error('[Graph prechequeo administrativo]', msg);
+    console.error('[AD cola] prechequeo sAM/UPN:', msg);
     throw new AdministrativePrecheckError(
       PRECHECK_CODES.GRAPH_UNAVAILABLE,
-      `No se pudo validar contra Microsoft Graph: ${msg}`,
+      `No se pudo resolver nombre de cuenta para la cola AD: ${msg}`,
       503
     );
   }

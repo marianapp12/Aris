@@ -5,8 +5,17 @@ import {
   iterateLocalPartCandidates,
   truncateForSamAccountName,
 } from '../utils/adUsernameHelpers.js';
-import { assertAdQueueConfigured, getAdQueueConfig } from '../config/adQueueConfig.js';
-import { runAdministrativeGraphPrecheck } from './graphAdministrativePrecheck.js';
+import { assertAdQueueConfigured, getAdQueueConfig, getAdQueueProcessedPath } from '../config/adQueueConfig.js';
+import { getGraphClient } from '../config/graphClient.js';
+import {
+  assertEmployeeIdAvailableForNewAdministrativeUser,
+  AdministrativePrecheckError,
+  PRECHECK_CODES,
+} from './graphAdministrativePrecheck.js';
+import { pickFirstAvailableSamAndUpnForAdQueue } from './adLdapSamAccountPick.js';
+import { assertEmployeeIdNotTakenInActiveDirectoryLdap } from './adLdapEmployeeIdPrecheck.js';
+import { assertNoPendingQueueFileWithEmployeeId } from './adQueuePendingEmployeeIdScan.js';
+import { assertEmployeeIdNotInProcessedRecords } from './adQueueProcessedEmployeeIdScan.js';
 
 function joinQueuePath(queueUnc, fileName) {
   const normalized = queueUnc.replace(/[/\\]+$/g, '');
@@ -96,6 +105,57 @@ export async function testAdQueueUncWrite() {
 }
 
 /**
+ * Cola AD: actualizar perfil de usuario existente en AD (localiza por employeeId / cédula).
+ * @param {object} body - validateAdministrativePayload
+ * @param {{ userPrincipalName?: string }} [graphHint] - UPN en Graph (solo respuesta al cliente)
+ */
+export async function enqueueAdUserUpdateByEmployeeIdRequest(body, graphHint = {}) {
+  const config = assertAdQueueConfigured();
+  const requestId = randomUUID();
+
+  const givenName = body.givenName.trim();
+  const surname1 = body.surname1.trim();
+  const surname2 = (body.surname2 && String(body.surname2).trim()) || '';
+  const employeeId = String(body.employeeId).trim();
+  const { primerNombre, segundoNombre } = splitGivenName(givenName);
+  const displayName = buildDisplayName(givenName, surname1, surname2 || undefined);
+
+  const payload = {
+    queueAction: 'updateByEmployeeId',
+    requestId,
+    submittedAt: new Date().toISOString(),
+    schemaVersion: config.schemaVersion,
+    employeeId,
+    primerNombre,
+    segundoNombre: segundoNombre || undefined,
+    primerApellido: surname1,
+    segundoApellido: surname2 || undefined,
+    displayName,
+    cargo: body.jobTitle.trim(),
+    departamento: body.department.trim(),
+    city: body.city?.trim() || undefined,
+  };
+
+  const targetPath = joinQueuePath(config.uncPath, `pendiente-${requestId}.json`);
+  const json = `${JSON.stringify(payload, null, 2)}\n`;
+
+  try {
+    await fs.writeFile(targetPath, json, 'utf8');
+  } catch (e) {
+    throw mapWriteError(e);
+  }
+
+  return {
+    requestId,
+    queuePath: targetPath,
+    displayName,
+    employeeId,
+    queueAction: 'updateByEmployeeId',
+    userPrincipalName: graphHint.userPrincipalName,
+  };
+}
+
+/**
  * Escribe un JSON por solicitud en la UNC configurada (evita pérdidas por concurrencia).
  * @param {object} body - mismo shape que validateAdministrativePayload (givenName, surname1, …)
  */
@@ -108,28 +168,70 @@ export async function enqueueAdUserRequest(body) {
   const surname2 = (body.surname2 && String(body.surname2).trim()) || '';
   const employeeId = String(body.employeeId).trim();
   const { primerNombre, segundoNombre } = splitGivenName(givenName);
+  const processedPath = getAdQueueProcessedPath();
 
   let samAccountName;
   let userPrincipalName;
   if (!config.skipGraphPrecheck) {
-    const picked = await runAdministrativeGraphPrecheck({
+    let graphClient;
+    try {
+      graphClient = getGraphClient();
+    } catch (e) {
+      throw new AdministrativePrecheckError(
+        PRECHECK_CODES.GRAPH_UNAVAILABLE,
+        e?.message || 'No se pudo inicializar Microsoft Graph (revise AZURE_* en .env).',
+        503
+      );
+    }
+    try {
+      await assertEmployeeIdAvailableForNewAdministrativeUser(graphClient, employeeId);
+      await assertEmployeeIdNotInProcessedRecords(processedPath, employeeId);
+      await assertNoPendingQueueFileWithEmployeeId(config.uncPath, employeeId);
+      await assertEmployeeIdNotTakenInActiveDirectoryLdap(employeeId);
+      const picked = await pickFirstAvailableSamAndUpnForAdQueue({
+        givenName,
+        surname1,
+        surname2: surname2 || undefined,
+        emailDomain: config.emailDomain,
+      });
+      samAccountName = picked.samAccountName;
+      userPrincipalName = picked.userPrincipalName;
+    } catch (err) {
+      if (err instanceof AdministrativePrecheckError) throw err;
+      const msg = err?.message || String(err);
+      console.error('[AD-Queue] prechequeo antes de encolar:', msg);
+      throw new AdministrativePrecheckError(
+        PRECHECK_CODES.GRAPH_UNAVAILABLE,
+        `No se pudo completar el prechequeo antes de encolar (Entra ID / LDAP / cola): ${msg}`,
+        503
+      );
+    }
+  } else {
+    if (config.requireGraphForAdmin) {
+      throw new AdministrativePrecheckError(
+        PRECHECK_CODES.GRAPH_UNAVAILABLE,
+        'Con AD_QUEUE_REQUIRE_GRAPH_FOR_ADMIN activo no se permite omitir el prechequeo Graph (desactive AD_QUEUE_SKIP_GRAPH_PRECHECK o AD_QUEUE_REQUIRE_GRAPH_FOR_ADMIN).',
+        503
+      );
+    }
+    await assertEmployeeIdNotInProcessedRecords(processedPath, employeeId);
+    await assertNoPendingQueueFileWithEmployeeId(config.uncPath, employeeId);
+    await assertEmployeeIdNotTakenInActiveDirectoryLdap(employeeId);
+    const pickedSkip = await pickFirstAvailableSamAndUpnForAdQueue({
       givenName,
       surname1,
       surname2: surname2 || undefined,
-      employeeId,
       emailDomain: config.emailDomain,
     });
-    samAccountName = picked.samAccountName;
-    userPrincipalName = picked.userPrincipalName;
-  } else {
-    samAccountName = firstSamCandidate(givenName, surname1, surname2 || undefined);
-    userPrincipalName = `${samAccountName}@${config.emailDomain}`;
+    samAccountName = pickedSkip.samAccountName;
+    userPrincipalName = pickedSkip.userPrincipalName;
   }
 
   const email = userPrincipalName;
   const displayName = buildDisplayName(givenName, surname1, surname2 || undefined);
 
   const payload = {
+    queueAction: 'create',
     requestId,
     submittedAt: new Date().toISOString(),
     schemaVersion: config.schemaVersion,
@@ -159,8 +261,10 @@ export async function enqueueAdUserRequest(body) {
   const json = `${JSON.stringify(payload, null, 2)}\n`;
 
   try {
+    await assertNoPendingQueueFileWithEmployeeId(config.uncPath, employeeId);
     await fs.writeFile(targetPath, json, 'utf8');
   } catch (e) {
+    if (e instanceof AdministrativePrecheckError) throw e;
     throw mapWriteError(e);
   }
 
@@ -171,6 +275,7 @@ export async function enqueueAdUserRequest(body) {
     userPrincipalName,
     displayName,
     email,
+    queueAction: 'create',
   };
 }
 

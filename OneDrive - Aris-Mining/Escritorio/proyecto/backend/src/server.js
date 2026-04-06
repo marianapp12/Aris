@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import operationalUsersRoutes from './routes/operationalUsers.js';
 import queueUsersRoutes from './routes/queueUsers.js';
 import administrativeUsersRoutes from './routes/administrativeUsers.js';
+import { startAdQueueProcessedGraphCleanup } from './services/adQueueProcessedGraphCleanup.js';
 
 // Cargar variables de entorno
 dotenv.config();
@@ -38,6 +39,7 @@ app.use((err, req, res, next) => {
 // Iniciar servidor
 app.listen(PORT, () => {
   console.log(`Servidor ejecutándose en http://localhost:${PORT}`);
+  startAdQueueProcessedGraphCleanup();
 });
 
 export default app;

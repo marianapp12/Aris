@@ -1,16 +1,19 @@
+import fs from 'fs/promises';
 import XLSX from 'xlsx';
 import { validateAdministrativePayload } from '../utils/administrativeUserValidation.js';
-import { getAdQueueConfig } from '../config/adQueueConfig.js';
-import { getGraphClient } from '../config/graphClient.js';
+import { normalizeAdministrativeBody } from '../utils/administrativeUserNormalization.js';
+import {
+  getAdQueueConfig,
+  getAdQueueResultsPath,
+  joinAdQueueFilePath,
+} from '../config/adQueueConfig.js';
 import {
   enqueueAdUserRequest,
   proposeAdministrativeUsername,
   testAdQueueUncWrite,
 } from '../services/adQueueUserService.js';
-import {
-  AdministrativePrecheckError,
-  pickAvailableSamAndUpn,
-} from '../services/graphAdministrativePrecheck.js';
+import { AdministrativePrecheckError } from '../services/graphAdministrativePrecheck.js';
+import { pickFirstAvailableSamAndUpnForAdQueue } from '../services/adLdapSamAccountPick.js';
 import { parseAdministrativeBulkSheet } from '../utils/excelAdministrativeBulkParse.js';
 
 const toTitleCase = (value) =>
@@ -23,6 +26,10 @@ const toTitleCase = (value) =>
 
 const onlyLettersRegex = /[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s-]/;
 const hasInvalidCharsForName = (value) => value && onlyLettersRegex.test(value);
+
+/** Evita path traversal en nombres resultado-*.json (UUID v4 típico de la cola). */
+const QUEUE_REQUEST_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * POST /api/users y POST /api/users/administrative — 202 Accepted + requestId (cola SMB)
@@ -37,26 +44,38 @@ export const createUserViaAdQueue = async (req, res) => {
   }
 
   try {
-    const result = await enqueueAdUserRequest(req.body);
+    const normalized = normalizeAdministrativeBody(req.body);
+    const result = await enqueueAdUserRequest(normalized);
 
     return res.status(202).json({
       requestId: result.requestId,
       message:
         'Solicitud encolada. El usuario se creará en Active Directory cuando el servidor procese el archivo; puede tardar varios minutos (sincronización con Microsoft 365 vía Azure AD Connect).',
       queuePath: result.queuePath,
-      proposedUserName: result.samAccountName,
-      userPrincipalName: result.userPrincipalName,
+      proposedUserName: result.samAccountName ?? undefined,
+      userPrincipalName: result.userPrincipalName ?? undefined,
       displayName: result.displayName,
+      queueAction: result.queueAction ?? 'create',
     });
   } catch (error) {
     if (error instanceof AdministrativePrecheckError) {
       return res.status(error.httpStatus).json({
         error:
           error.code === 'EMPLOYEE_ID_IN_USE'
-            ? 'Cédula / ID duplicada'
-            : error.code === 'NO_UPN_AVAILABLE'
-              ? 'Sin nombre de usuario disponible'
-              : 'Prechequeo Microsoft Graph',
+            ? 'Cédula ya registrada en Microsoft 365'
+            : error.code === 'EMPLOYEE_ID_IN_USE_AD'
+              ? 'Cédula ya registrada en Active Directory'
+              : error.code === 'EMPLOYEE_ID_PENDING_IN_QUEUE'
+                ? 'Cédula con solicitud ya en cola'
+                : error.code === 'EMPLOYEE_ID_IN_PROCESSED_RECORDS'
+                  ? 'Usuario ya registrado en Active Directory (procesados)'
+                  : error.code === 'EMPLOYEE_ID_AMBIGUOUS'
+                    ? 'Cédula / ID ambigua en el directorio'
+                    : error.code === 'AD_LDAP_UNAVAILABLE'
+                      ? 'No se pudo consultar Active Directory (LDAP)'
+                      : error.code === 'NO_UPN_AVAILABLE'
+                        ? 'Sin nombre de cuenta disponible (UPN / alias); colisión técnica, no cédula'
+                        : 'Prechequeo antes de encolar',
         message: error.message,
         code: error.code,
       });
@@ -90,7 +109,7 @@ export const testAdQueueConnection = async (req, res) => {
 };
 
 /**
- * GET /api/users/administrative/next-username — candidato libre vía Graph (o primer candidato si skip prechequeo)
+ * GET /api/users/administrative/next-username — candidato libre en AD (LDAP) o primer candidato si skip / sin LDAP
  */
 export const getNextAdministrativeUsername = async (req, res) => {
   try {
@@ -125,8 +144,7 @@ export const getNextAdministrativeUsername = async (req, res) => {
       });
     }
 
-    const graphClient = getGraphClient();
-    const picked = await pickAvailableSamAndUpn(graphClient, {
+    const picked = await pickFirstAvailableSamAndUpnForAdQueue({
       givenName,
       surname1,
       surname2: surname2 || undefined,
@@ -140,19 +158,18 @@ export const getNextAdministrativeUsername = async (req, res) => {
   } catch (error) {
     if (error instanceof AdministrativePrecheckError) {
       return res.status(error.httpStatus).json({
-        error: 'Prechequeo Microsoft Graph',
+        error:
+          error.code === 'NO_UPN_AVAILABLE'
+            ? 'Sin nombre de cuenta disponible (UPN / alias); colisión técnica, no cédula'
+            : error.code === 'AD_LDAP_UNAVAILABLE'
+              ? 'No se pudo consultar Active Directory (LDAP)'
+              : 'Prechequeo cola administrativa',
         message: error.message,
         code: error.code,
       });
     }
 
     const msg = error?.message || String(error);
-    if (msg.includes('Falta la variable de entorno') && msg.includes('AZURE_')) {
-      return res.status(503).json({
-        error: 'Microsoft Graph no configurado',
-        message: msg,
-      });
-    }
     if (msg.includes('Falta la variable de entorno AD_QUEUE_')) {
       return res.status(503).json({
         error: 'Configuración de cola AD incompleta',
@@ -322,6 +339,7 @@ export const createAdministrativeUsersBulk = async (req, res) => {
           userPrincipalName: created.userPrincipalName,
           displayName: created.displayName,
           proposedUserName: created.samAccountName,
+          queueAction: created.queueAction ?? 'create',
         });
       } catch (error) {
         if (error instanceof AdministrativePrecheckError) {
@@ -352,6 +370,96 @@ export const createAdministrativeUsersBulk = async (req, res) => {
     return res.status(500).json({
       error: 'Error interno',
       message: msg || 'Error al procesar el archivo de usuarios.',
+    });
+  }
+};
+
+/**
+ * GET /api/users/administrative/queue-requests/:requestId/result
+ * Lee resultado-{requestId}.json (carpeta resultados del UNC). Expone al front el mismo estado
+ * que escribió PowerShell: en éxito, samAccountName / userPrincipalName / email definitivos en AD.
+ */
+export const getAdministrativeQueueRequestResult = async (req, res) => {
+  const requestId = String(req.params.requestId || '').trim();
+  if (!QUEUE_REQUEST_ID_RE.test(requestId)) {
+    return res.status(400).json({
+      error: 'Solicitud inválida',
+      message: 'El identificador de solicitud no tiene un formato válido.',
+    });
+  }
+
+  const resultsRoot = getAdQueueResultsPath();
+  if (!resultsRoot) {
+    return res.status(503).json({
+      error: 'Configuración incompleta',
+      message:
+        'Configure AD_QUEUE_UNC (o AD_QUEUE_RESULTS_UNC) para consultar el resultado del procesamiento en Active Directory.',
+    });
+  }
+
+  const filePath = joinAdQueueFilePath(resultsRoot, `resultado-${requestId}.json`);
+
+  try {
+    const raw = await fs.readFile(filePath, 'utf8');
+    const rawClean = raw.replace(/^\uFEFF/, '').trim();
+    let data;
+    try {
+      data = JSON.parse(rawClean);
+    } catch (parseErr) {
+      const hint = parseErr?.message || String(parseErr);
+      return res.status(500).json({
+        error: 'Resultado inválido',
+        message: `El archivo de resultado no es JSON válido: ${hint}`,
+      });
+    }
+    const rawStatus = data.status ?? data.Status;
+    const st =
+      rawStatus === 'success' || rawStatus === 'error' ? rawStatus : 'error';
+    const rawMessage = data.message ?? data.Message;
+    const message =
+      typeof rawMessage === 'string' ? rawMessage : 'Respuesta sin mensaje descriptivo.';
+    const processedAt = data.processedAt ?? data.ProcessedAt;
+    const queueAction = data.queueAction ?? data.QueueAction;
+    const samAccountName = data.samAccountName ?? data.SamAccountName;
+    // Valores definitivos en AD (el script puede cambiar sAM/UPN respecto al JSON pendiente)
+    const userPrincipalName = data.userPrincipalName ?? data.UserPrincipalName;
+    const emailFromFile =
+      data.email ?? data.Email ?? data.mail ?? data.Mail;
+    return res.status(200).json({
+      status: st,
+      message,
+      requestId: (data.requestId ?? data.RequestId) ?? requestId,
+      processedAt: processedAt || undefined,
+      queueAction: queueAction || undefined,
+      samAccountName: samAccountName || undefined,
+      userPrincipalName:
+        typeof userPrincipalName === 'string' && userPrincipalName.trim()
+          ? userPrincipalName.trim()
+          : undefined,
+      email:
+        typeof emailFromFile === 'string' && emailFromFile.trim()
+          ? emailFromFile.trim()
+          : undefined,
+    });
+  } catch (e) {
+    if (e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) {
+      return res.status(200).json({
+        status: 'pending',
+        message:
+          'Aún no hay resultado: el script de Active Directory no ha procesado esta solicitud o el archivo no existe.',
+        requestId,
+      });
+    }
+    const msg = e?.message || String(e);
+    console.error('[AD-Queue] leer resultado:', msg);
+    const isAccess =
+      e && (e.code === 'EACCES' || e.code === 'EPERM' || e.code === 'EBUSY');
+    const detail = isAccess
+      ? `${msg} Compruebe que la cuenta del proceso Node puede leer la carpeta configurada en AD_QUEUE_RESULTS_UNC (o resultados bajo AD_QUEUE_UNC).`
+      : msg;
+    return res.status(500).json({
+      error: 'Error al leer resultado',
+      message: detail,
     });
   }
 };

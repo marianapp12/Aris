@@ -1,5 +1,5 @@
 /**
- * Generación de sAMAccountName / localPart alineada con graphUserService (operarios M365).
+ * Generación de sAMAccountName / localPart alineada con graphUpnCandidatePicker (operativos y administrativos vía Graph).
  */
 
 export const normalizeName = (name) =>
@@ -23,10 +23,24 @@ export const generateLocalPart = (givenName, surname) => {
 export const SAM_MAX_LENGTH = 20;
 
 /**
- * Trunca el localPart para sAMAccountName sin romper solo el sufijo numérico si existe.
+ * Trunca el localPart para sAMAccountName (≤ SAM_MAX_LENGTH).
+ * Si termina en .número (homónimos), preserva el sufijo y trunca solo la base para que .1 y .2 no colisionen.
  */
 export function truncateForSamAccountName(localPart) {
-  if (localPart.length <= SAM_MAX_LENGTH) return localPart;
+  if (!localPart || localPart.length <= SAM_MAX_LENGTH) return localPart;
+
+  const m = localPart.match(/^(.+)\.(\d+)$/);
+  if (m) {
+    const base = m[1];
+    const suffix = `.${m[2]}`;
+    const maxBaseLen = SAM_MAX_LENGTH - suffix.length;
+    if (maxBaseLen < 1) {
+      return localPart.slice(0, SAM_MAX_LENGTH);
+    }
+    const truncatedBase = base.length > maxBaseLen ? base.slice(0, maxBaseLen) : base;
+    return `${truncatedBase}${suffix}`;
+  }
+
   return localPart.slice(0, SAM_MAX_LENGTH);
 }
 
