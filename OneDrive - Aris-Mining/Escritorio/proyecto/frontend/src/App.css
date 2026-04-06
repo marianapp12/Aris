@@ -4,21 +4,25 @@
 /* ── Variables ─────────────────────────────────────────────────────────── */
 
 :root {
-  --navy:        #172540;
-  --navy-mid:    #1a2d4a;
-  --navy-card:   #1e2f4d;
-  --navy-border: rgba(3, 136, 166, 0.22);
-  --gold:        #0388A6;
-  --gold-light:  #5ec4dc;
-  --gold-dim:    rgba(3, 136, 166, 0.15);
-  --text:        #f2f2f2;
-  --text-muted:  #7a8499;
-  --text-dim:    #4a5470;
-  --error:       #e05c5c;
-  --error-bg:    rgba(224, 92, 92, 0.08);
-  --success:     #4caf7d;
-  --radius:      6px;
-  --radius-lg:   12px;
+  /* Tema claro corporativo: buen contraste para logo azul y lectura prolongada */
+  --page-bg:     #e6edf5;
+  --surface:     #ffffff;
+  --surface-muted: #f0f4f8;
+  --navy:        #122a42;
+  --navy-mid:    #1a3d5c;
+  --navy-card:   #ffffff;
+  --navy-border: rgba(5, 125, 155, 0.22);
+  --gold:        #067996;
+  --gold-light:  #1cb0cf;
+  --gold-dim:    rgba(5, 125, 155, 0.14);
+  --text:        #122a42;
+  --text-muted:  #4a5d73;
+  --text-dim:    #6b7d92;
+  --error:       #c73e3e;
+  --error-bg:    rgba(199, 62, 62, 0.08);
+  --success:     #0d9a5c;
+  --radius:      8px;
+  --radius-lg:   14px;
 }
 
 /* ── Reset ─────────────────────────────────────────────────────────────── */
@@ -30,7 +34,7 @@
   display: flex;
   flex-direction: column;
   font-family: 'Barlow', sans-serif;
-  background: var(--navy);
+  background: var(--page-bg);
   color: var(--text);
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
@@ -38,13 +42,14 @@
 
 /* ── Header ────────────────────────────────────────────────────────────── */
 .app-header {
-  background: var(--navy-card);
+  background: var(--surface);
   border-bottom: 1px solid var(--navy-border);
   padding: 0 2rem;
   position: sticky;
   top: 0;
   z-index: 100;
-  backdrop-filter: blur(8px);
+  box-shadow: 0 1px 0 rgba(18, 42, 66, 0.06);
+  backdrop-filter: blur(10px);
 }
 
 .header-inner {
@@ -60,6 +65,18 @@
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+/* Contraste para logos con azul oscuro sobre fondo claro */
+.brand-logo-wrap {
+  padding: 6px 12px;
+  border-radius: 12px;
+  background: var(--surface-muted);
+  border: 1px solid var(--navy-border);
+  box-shadow: 0 1px 2px rgba(18, 42, 66, 0.06);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .brand-mark {
@@ -105,7 +122,7 @@
   font-size: 12px;
   color: var(--text-muted);
   letter-spacing: 0.5px;
-  background: var(--navy);
+  background: var(--surface-muted);
   border: 1px solid var(--navy-border);
   padding: 5px 12px;
   border-radius: 20px;
@@ -163,7 +180,7 @@
   border: 1px solid var(--navy-border);
   border-radius: var(--radius-lg);
   padding: 2.5rem;
-  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 28px rgba(18, 42, 66, 0.08);
 }
 
 /* ── Form sections ─────────────────────────────────────────────────────── */
@@ -212,7 +229,7 @@
 }
 
 .form-input {
-  background: var(--navy);
+  background: var(--surface-muted);
   border: 1px solid var(--navy-border);
   border-radius: var(--radius);
   padding: 10px 14px;
@@ -245,7 +262,7 @@
 
 /* ── Derived fields ────────────────────────────────────────────────────── */
 .derived-section {
-  background: var(--navy);
+  background: var(--surface-muted);
   border: 1px solid var(--navy-border);
   border-radius: var(--radius-lg);
   padding: 1.5rem;
@@ -281,7 +298,7 @@
   font-size: 14px;
   color: var(--text);
   padding: 8px 12px;
-  background: var(--navy-card);
+  background: var(--surface);
   border: 1px solid var(--navy-border);
   border-radius: var(--radius);
   min-height: 38px;
@@ -383,8 +400,8 @@
 .spinner {
   width: 15px;
   height: 15px;
-  border: 2px solid rgba(10, 15, 30, 0.3);
-  border-top-color: var(--navy);
+  border: 2px solid rgba(18, 42, 66, 0.15);
+  border-top-color: var(--gold);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
   flex-shrink: 0;
@@ -436,7 +453,7 @@
 }
 
 .summary-details {
-  background: var(--navy);
+  background: var(--surface-muted);
   border: 1px solid var(--navy-border);
   border-radius: var(--radius-lg);
   overflow: hidden;
@@ -448,7 +465,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 14px 20px;
-  border-bottom: 1px solid var(--navy-border);
+  border-bottom: 1px solid rgba(18, 42, 66, 0.08);
   gap: 1rem;
 }
 
@@ -485,8 +502,8 @@
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  background: rgba(3, 136, 166, 0.1);
-  border: 1px solid rgba(3, 136, 166, 0.35);
+  background: var(--gold-dim);
+  border: 1px solid rgba(5, 125, 155, 0.28);
   border-radius: var(--radius);
   padding: 14px 16px;
   margin-bottom: 1.75rem;
@@ -528,4 +545,7 @@
 .brand-logo-img {
   flex-shrink: 0;
   display: block;
+  max-height: 44px;
+  width: auto;
+  object-fit: contain;
 }

@@ -118,7 +118,9 @@ const App: React.FC = () => {
       <header className="app-header">
         <div className="header-inner">
           <div className="brand">
-            <BrandLogo variant="header" className="brand-logo-img" />
+            <div className="brand-logo-wrap">
+              <BrandLogo variant="header" className="brand-logo-img" />
+            </div>
             <div className="brand-text">
               <span className="brand-name">ARIS MINING</span>
               <span className="brand-sub">Creación de usuarios</span>

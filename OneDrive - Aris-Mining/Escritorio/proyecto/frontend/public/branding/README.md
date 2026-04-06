@@ -6,13 +6,13 @@ Los archivos de esta carpeta se sirven en la raíz del sitio con la URL **`/bran
 
 ## Qué archivo usar
 
-1. **Por defecto** la aplicación carga **`logo.svg`** (incluido como ejemplo; podéis sustituirlo por el logo oficial manteniendo el mismo nombre).
-2. Si preferís **PNG**, copiad por ejemplo `logo.png` aquí y editad la constante **`BRAND_LOGO_PATH`** en  
+1. **Por defecto** la aplicación carga **`logo.png`** en esta carpeta (sustituid el archivo por el logo oficial manteniendo el nombre).
+2. Para usar **SVG** u otro nombre, cambiad **`BRAND_LOGO_PATH`** en  
    `frontend/src/components/branding/BrandLogo.tsx`  
-   para que apunte a `'/branding/logo.png'`.
+   (por ejemplo `'/branding/logo.svg'`).
 
-## Colores corporativos referencia
+## Colores corporativos referencia (UI)
 
-- Teal: `#0388A6`
-- Gris claro: `#F2F2F2`
-- Azul marino: `#172540`
+- Teal principal: `#067996`
+- Fondo página: `#E6EDF5`
+- Texto navy: `#122A42`

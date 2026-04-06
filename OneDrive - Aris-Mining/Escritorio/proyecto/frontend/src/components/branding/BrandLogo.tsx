@@ -1,8 +1,8 @@
 ﻿/**
  * Logo corporativo desde `public/branding/`.
- * Sustituir `logo.svg` en esa carpeta o cambiar BRAND_LOGO_PATH (ver public/branding/README.md).
+ * Archivo por defecto: `logo.png` (ver `public/branding/README.md`).
  */
-export const BRAND_LOGO_PATH = '/branding/logo.svg';
+export const BRAND_LOGO_PATH = '/branding/logo.png';
 
 type BrandLogoProps = {
   className?: string;
@@ -15,9 +15,26 @@ export function BrandLogo({ className, variant = 'default' }: BrandLogoProps) {
       className={className}
       src={BRAND_LOGO_PATH}
       alt="Aris Mining"
+      decoding="async"
       {...(variant === 'header'
-        ? { height: 40, style: { width: 'auto', maxWidth: 200, objectFit: 'contain' as const } }
-        : { height: 48, style: { width: 'auto', maxWidth: 260, objectFit: 'contain' as const } })}
+        ? {
+            height: 40,
+            style: {
+              width: 'auto',
+              maxWidth: 220,
+              maxHeight: 40,
+              objectFit: 'contain' as const,
+            },
+          }
+        : {
+            height: 52,
+            style: {
+              width: 'auto',
+              maxWidth: 280,
+              maxHeight: 56,
+              objectFit: 'contain' as const,
+            },
+          })}
     />
   );
 }
