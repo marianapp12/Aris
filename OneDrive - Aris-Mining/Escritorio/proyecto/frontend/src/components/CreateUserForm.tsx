@@ -1,5 +1,11 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
-import { UserFormData, UserPreview, AdQueueRequestResult } from '../types/user';
+import {
+  UserFormData,
+  UserPreview,
+  AdQueueRequestResult,
+  OPERATIONAL_SEDE_OPTIONS,
+  type OperationalGroupMembershipResult,
+} from '../types/user';
 import { isAdScriptDuplicateEmployeeIdMessage } from '../utils/adQueueScriptMessages';
 import {
   createOperationalUser,
@@ -44,7 +50,198 @@ type CreatedUser = {
   creationType: UserCreationType;
   /** Alta nueva en cola AD vs actualización de perfil (cédula ya en Graph). */
   adminQueueAction?: 'create' | 'updateByEmployeeId';
+  /** Solo creación operativa individual. */
+  sede?: string;
+  groupObjectId?: string;
+  groupMemberAdded?: boolean;
+  groupMemberships?: OperationalGroupMembershipResult[];
 };
+
+function formatGraphErrorSuffix(g: OperationalGroupMembershipResult['graphError']): string {
+  if (!g) return '';
+  const bits = [
+    g.code,
+    g.httpStatus != null ? `HTTP ${g.httpStatus}` : '',
+    g.message ? g.message.slice(0, 160) : '',
+  ].filter(Boolean);
+  if (bits.length === 0) return '';
+  return bits.join(' · ');
+}
+
+/** Compatibilidad si el backend no envía groupMemberships. */
+function operationalGroupAssignmentLabel(
+  sede: string | undefined,
+  groupObjectId: string | undefined,
+  groupMemberAdded: boolean | undefined
+): string {
+  const place = sede?.trim() || '—';
+  if (!groupObjectId) {
+    return `${place} — no se configuró GROUP_* en el servidor`;
+  }
+  if (groupMemberAdded) {
+    return `${place} — miembro agregado`;
+  }
+  return `${place} — no se pudo agregar (revise logs del backend)`;
+}
+
+function OperationalGroupMembershipCard({
+  m,
+  sedeName,
+}: {
+  m: OperationalGroupMembershipResult;
+  sedeName: string | undefined;
+}) {
+  const place = sedeName?.trim() || '—';
+  const groupName = m.groupDisplayName?.trim();
+  const nameMatchesSede =
+    m.kind === 'sede' &&
+    groupName &&
+    place !== '—' &&
+    groupName.localeCompare(place, undefined, { sensitivity: 'accent' }) === 0;
+
+  let primaryTitle = '';
+  let subtitle = '';
+  let errorText = '';
+
+  if (m.kind === 'sede') {
+    subtitle = 'Grupo según sede';
+    if (!m.groupObjectId) {
+      primaryTitle = place !== '—' ? `Sede ${place}` : 'Sede';
+      errorText = 'No hay GROUP_* configurado en el servidor para esta sede.';
+    } else if (nameMatchesSede) {
+      primaryTitle = place;
+      subtitle = 'Grupo de la sede (Microsoft 365)';
+    } else if (groupName) {
+      primaryTitle = groupName;
+      subtitle = `Sede: ${place}`;
+    } else {
+      primaryTitle = `Sede ${place}`;
+    }
+    if (m.groupObjectId && !m.memberAdded) {
+      errorText =
+        (groupName && !nameMatchesSede ? `${groupName}: ` : '') +
+        'No se pudo agregar al grupo' +
+        (formatGraphErrorSuffix(m.graphError)
+          ? ` (${formatGraphErrorSuffix(m.graphError)})`
+          : '.');
+    }
+  } else {
+    subtitle = 'Grupo común (todos los operarios)';
+    if (!m.groupObjectId) {
+      primaryTitle = 'Ranura sin grupo';
+      errorText =
+        'Falta Object ID en OPERATIONAL_COMMON_GROUP_IDS (revisar .env del servidor).';
+    } else {
+      primaryTitle = groupName || 'Grupo común';
+    }
+    if (m.groupObjectId && !m.memberAdded) {
+      errorText =
+        'No se pudo agregar' +
+        (formatGraphErrorSuffix(m.graphError)
+          ? ` (${formatGraphErrorSuffix(m.graphError)})`
+          : '.');
+    }
+  }
+
+  const ok = m.memberAdded && !!m.groupObjectId;
+
+  return (
+    <div
+      className={`operational-group-card ${ok ? 'operational-group-card--ok' : errorText ? 'operational-group-card--err' : ''}`}
+    >
+      <div className="operational-group-card__main">
+        <div className="operational-group-card__title">{primaryTitle}</div>
+        <div className="operational-group-card__subtitle">{subtitle}</div>
+        {errorText ? (
+          <div className="operational-group-card__error">{errorText}</div>
+        ) : null}
+      </div>
+      {m.groupObjectId ? (
+        <span
+          className={`operational-group-badge ${ok ? 'operational-group-badge--ok' : 'operational-group-badge--err'}`}
+        >
+          {ok ? 'Agregado' : 'Error'}
+        </span>
+      ) : (
+        <span className="operational-group-badge operational-group-badge--warn">Pendiente</span>
+      )}
+    </div>
+  );
+}
+
+function OperationalGroupAssignmentsBlock({
+  memberships,
+  sedeName,
+  legacySede,
+  legacyGroupObjectId,
+  legacyGroupMemberAdded,
+}: {
+  memberships: OperationalGroupMembershipResult[] | undefined;
+  sedeName: string | undefined;
+  legacySede: string | undefined;
+  legacyGroupObjectId: string | undefined;
+  legacyGroupMemberAdded: boolean | undefined;
+}) {
+  const hasStructured = memberships && memberships.length > 0;
+  const sedeItems = hasStructured
+    ? memberships!.filter((x) => x.kind === 'sede')
+    : [];
+  const commonItems = hasStructured
+    ? memberships!.filter((x) => x.kind === 'common')
+    : [];
+
+  return (
+    <div className="success-row">
+      <span className="success-label">ASIGNACIÓN A GRUPOS</span>
+      <span className="success-value operational-groups-value">
+        {hasStructured ? (
+          <div className="operational-groups-panel">
+            {sedeItems.length > 0 ? (
+              <div className="operational-groups-section">
+                <div className="operational-groups-section__title">Por sede</div>
+                <div className="operational-groups-section__cards">
+                  {sedeItems.map((m, i) => (
+                    <OperationalGroupMembershipCard
+                      key={`sede-${i}`}
+                      m={m}
+                      sedeName={sedeName}
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {commonItems.length > 0 ? (
+              <div className="operational-groups-section">
+                <div className="operational-groups-section__title">Grupos comunes</div>
+                <div className="operational-groups-section__cards">
+                  {commonItems.map((m, i) => (
+                    <OperationalGroupMembershipCard
+                      key={`common-${i}`}
+                      m={m}
+                      sedeName={sedeName}
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <div className="operational-groups-panel">
+            <div className="operational-group-card operational-group-card--legacy">
+              <p className="operational-group-card__legacy-text">
+                {operationalGroupAssignmentLabel(
+                  legacySede,
+                  legacyGroupObjectId,
+                  legacyGroupMemberAdded
+                )}
+              </p>
+            </div>
+          </div>
+        )}
+      </span>
+    </div>
+  );
+}
 
 const SMB_QUEUE_HELP_STEPS: string[] = [
   'El navegador no escribe en la carpeta compartida: quien necesita acceso SMB es la máquina (o servidor) donde está ejecutándose el backend Node.',
@@ -54,6 +251,23 @@ const SMB_QUEUE_HELP_STEPS: string[] = [
 
 const AD_RESULT_POLL_MS = 4000;
 const AD_RESULT_MAX_POLLS = 75;
+
+/** Fila devuelta por POST .../bulk (operativo o administrativo). */
+type BulkRowResult = {
+  row: number;
+  status: string;
+  userPrincipalName?: string;
+  displayName?: string;
+  sede?: string;
+  groupObjectId?: string;
+  groupMemberAdded?: boolean;
+  groupMemberships?: OperationalGroupMembershipResult[];
+  message?: string;
+  code?: string;
+  requestId?: string;
+  proposedUserName?: string;
+  queueAction?: 'create' | 'updateByEmployeeId';
+};
 
 const CreateUserForm = () => {
   const [userCreationType, setUserCreationType] =
@@ -66,6 +280,7 @@ const CreateUserForm = () => {
     apellido2: '',
     puesto: '',
     departamento: '',
+    sede: '',
     cedula: '',
     ciudad: '',
   });
@@ -85,6 +300,10 @@ const CreateUserForm = () => {
       status: string;
       userPrincipalName?: string;
       displayName?: string;
+      sede?: string;
+      groupObjectId?: string;
+      groupMemberAdded?: boolean;
+      groupMemberships?: OperationalGroupMembershipResult[];
       message?: string;
       code?: string;
     }[]
@@ -162,7 +381,6 @@ const CreateUserForm = () => {
     formData.apellido1,
     formData.apellido2,
     userCreationType,
-    adminSmbGatePassed,
   ]);
 
   // Obtener de la API el nombre de usuario con el que quedará guardada la cuenta
@@ -209,6 +427,7 @@ const CreateUserForm = () => {
     formData.apellido1,
     formData.apellido2,
     userCreationType,
+    adminSmbGatePassed,
   ]);
 
   useEffect(() => {
@@ -370,12 +589,29 @@ const CreateUserForm = () => {
       'apellido2',
       'puesto',
       'departamento',
+      'sede',
       'cedula',
       'ciudad',
     ];
 
     allFields.forEach((field) => {
       const value = formData[field];
+
+      if (field === 'sede') {
+        if (userCreationType !== 'operational') return;
+        if (!value.trim()) {
+          newErrors.sede = 'Seleccione una sede';
+          return;
+        }
+        if (
+          !OPERATIONAL_SEDE_OPTIONS.includes(
+            value as (typeof OPERATIONAL_SEDE_OPTIONS)[number]
+          )
+        ) {
+          newErrors.sede = 'Sede no válida';
+        }
+        return;
+      }
 
       if (field === 'cedula') {
         const error = validateField(field, value);
@@ -405,7 +641,9 @@ const CreateUserForm = () => {
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleChange = (
+    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
+  ) => {
     const { name, value } = e.target;
 
     setFormData((prev) => ({ ...prev, [name]: value }));
@@ -445,9 +683,11 @@ const CreateUserForm = () => {
 
       const result = await uploadBulkUsers(bulkFile);
 
-      const resultsArray = Array.isArray(result.results) ? result.results : [];
-      const successCount = resultsArray.filter((r: any) => r.status === 'success').length;
-      const errorCount = resultsArray.filter((r: any) => r.status === 'error').length;
+      const resultsArray = (
+        Array.isArray(result.results) ? result.results : []
+      ) as BulkRowResult[];
+      const successCount = resultsArray.filter((r) => r.status === 'success').length;
+      const errorCount = resultsArray.filter((r) => r.status === 'error').length;
 
       setBulkStatus('done');
       setBulkMessage(
@@ -487,9 +727,11 @@ const CreateUserForm = () => {
       setBulkAdminResults(null);
 
       const result = await uploadAdministrativeBulkUsers(bulkAdminFile);
-      const resultsArray = Array.isArray(result.results) ? result.results : [];
-      const successCount = resultsArray.filter((r: any) => r.status === 'success').length;
-      const errorCount = resultsArray.filter((r: any) => r.status === 'error').length;
+      const resultsArray = (
+        Array.isArray(result.results) ? result.results : []
+      ) as BulkRowResult[];
+      const successCount = resultsArray.filter((r) => r.status === 'success').length;
+      const errorCount = resultsArray.filter((r) => r.status === 'error').length;
 
       setBulkAdminStatus('done');
       setBulkAdminMessage(
@@ -559,6 +801,9 @@ const CreateUserForm = () => {
         surname2: apellido2Norm || undefined,
         jobTitle: puestoNorm,
         department: departamentoNorm,
+        ...(userCreationType === 'operational'
+          ? { sede: formData.sede.trim() }
+          : {}),
         ...(userCreationType === 'administrative'
           ? {
               employeeId: formData.cedula.trim(),
@@ -580,6 +825,10 @@ const CreateUserForm = () => {
           email,
           id: response?.id,
           creationType: 'operational',
+          sede: response.sede,
+          groupObjectId: response.groupObjectId,
+          groupMemberAdded: response.groupMemberAdded,
+          groupMemberships: response.groupMemberships,
         });
         setStatus('success');
       } else {
@@ -632,6 +881,7 @@ const CreateUserForm = () => {
       apellido2: '',
       puesto: '',
       departamento: '',
+      sede: '',
       cedula: '',
       ciudad: '',
     });
@@ -940,6 +1190,17 @@ const CreateUserForm = () => {
                     {u.userPrincipalName ?? '—'}
                   </span>
                 </div>
+                <div className="success-row">
+                  <span className="success-label">SEDE</span>
+                  <span className="success-value">{u.sede?.trim() || '—'}</span>
+                </div>
+                <OperationalGroupAssignmentsBlock
+                  memberships={u.groupMemberships}
+                  sedeName={u.sede}
+                  legacySede={u.sede}
+                  legacyGroupObjectId={u.groupObjectId}
+                  legacyGroupMemberAdded={u.groupMemberAdded}
+                />
               </div>
             </div>
           ))}
@@ -1049,6 +1310,24 @@ const CreateUserForm = () => {
                 {createdUser.userName}
               </span>
             </div>
+
+            {createdUser.creationType === 'operational' && (
+              <>
+                <div className="success-row">
+                  <span className="success-label">SEDE</span>
+                  <span className="success-value">
+                    {createdUser.sede?.trim() || '—'}
+                  </span>
+                </div>
+                <OperationalGroupAssignmentsBlock
+                  memberships={createdUser.groupMemberships}
+                  sedeName={createdUser.sede}
+                  legacySede={createdUser.sede}
+                  legacyGroupObjectId={createdUser.groupObjectId}
+                  legacyGroupMemberAdded={createdUser.groupMemberAdded}
+                />
+              </>
+            )}
 
             {createdUser.requestId && (
               <div className="success-row">
@@ -1338,6 +1617,25 @@ const CreateUserForm = () => {
             )}
           </div>
         </div>
+
+        {userCreationType === 'operational' && (
+          <div className="field-group" style={{ marginTop: 16 }}>
+            <label>SEDE *</label>
+            <select name="sede" value={formData.sede} onChange={handleChange}>
+              <option value="">Seleccione…</option>
+              {OPERATIONAL_SEDE_OPTIONS.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+            {errors.sede && <p className="error-text">{errors.sede}</p>}
+            <p className="note" style={{ marginTop: 8 }}>
+              Clasificación para asignación automática al grupo de Microsoft 365 correspondiente a la
+              sede.
+            </p>
+          </div>
+        )}
       </section>
 
       {userCreationType === 'administrative' && (
@@ -1392,7 +1690,8 @@ const CreateUserForm = () => {
             <p className="note">
               La plantilla debe tener la fila 1 con el título ARIS MINING y la fila 2 con estos
               encabezados: PrimerNombre, SegundoNombre, PrimerApellido, SegundoApellido, Puesto,
-              Departamento.
+              Departamento y una columna llamada <strong>Sede</strong> (se aceptan variantes de
+              mayúsculas). Valores exactos en Sede: {OPERATIONAL_SEDE_OPTIONS.join(', ')}.
             </p>
           </div>
 

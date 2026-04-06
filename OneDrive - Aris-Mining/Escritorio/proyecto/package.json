@@ -1,0 +1,9 @@
+{
+  "name": "aris-user-provisioning",
+  "private": true,
+  "description": "Monorepo: abra DOS terminales desde esta carpeta — (1) npm run dev:backend (2) npm run dev:frontend",
+  "scripts": {
+    "dev:backend": "npm run dev --prefix backend",
+    "dev:frontend": "npm run dev --prefix frontend"
+  }
+}

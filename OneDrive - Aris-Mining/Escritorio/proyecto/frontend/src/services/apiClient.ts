@@ -250,7 +250,13 @@ export const getNextAvailableUsername = async (params: {
   return response.data;
 };
 
-export const uploadBulkUsers = async (file: File): Promise<any> => {
+/** Respuesta 201 de carga masiva operativa o administrativa. */
+export interface BulkUploadApiResponse {
+  message?: string;
+  results?: unknown[];
+}
+
+export const uploadBulkUsers = async (file: File): Promise<BulkUploadApiResponse> => {
   const formData = new FormData();
   formData.append('file', file);
 
@@ -265,7 +271,9 @@ export const uploadBulkUsers = async (file: File): Promise<any> => {
 };
 
 /** Carga masiva administrativa (cola AD / SMB). Misma plantilla que operativos + Cedula y opcional Ciudad. */
-export const uploadAdministrativeBulkUsers = async (file: File): Promise<any> => {
+export const uploadAdministrativeBulkUsers = async (
+  file: File
+): Promise<BulkUploadApiResponse> => {
   const formData = new FormData();
   formData.append('file', file);
 

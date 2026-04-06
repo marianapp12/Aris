@@ -365,11 +365,10 @@ foreach ($f in $files) {
             }
             $identity = $adUser.DistinguishedName
             Write-QueueLog "Actualizando usuario AD (EmployeeID=$empId): $($adUser.SamAccountName)"
-            $surnameAd = $item.primerApellido.Trim()
             $uParams = @{
                 Identity    = $identity
                 GivenName   = $givenName
-                Surname     = $surnameAd
+                Surname     = $surname
                 DisplayName = $displayName
             }
             if ($item.cargo)        { $uParams['Title']       = [string]$item.cargo }
@@ -473,7 +472,7 @@ foreach ($f in $files) {
             SamAccountName         = $sam
             UserPrincipalName      = $upn
             GivenName              = $givenName
-            Surname                = $paOnly
+            Surname                = $surname
             DisplayName            = $displayName
             Path                   = $ou
             AccountPassword        = $password

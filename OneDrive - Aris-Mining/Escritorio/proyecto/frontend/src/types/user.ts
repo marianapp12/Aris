@@ -4,10 +4,29 @@ export interface CreateUserRequest {
   surname2?: string;
   jobTitle: string;
   department: string;
+  /** Solo usuarios operativos: una de OPERATIONAL_SEDE_OPTIONS */
+  sede?: string;
   /** Cédula / ID empleado (pestaña administrativa, opcional) */
   employeeId?: string;
   /** Ciudad (pestaña administrativa, opcional) */
   city?: string;
+}
+
+/** Detalle seguro del rechazo de Microsoft Graph (sin cuerpo completo). */
+export interface OperationalGroupGraphError {
+  httpStatus?: number;
+  code?: string;
+  message?: string;
+}
+
+/** Resultado por grupo (sede + comunes) tras crear operativo en Graph. */
+export interface OperationalGroupMembershipResult {
+  kind: 'sede' | 'common';
+  groupObjectId?: string;
+  /** Nombre del grupo en Entra ID (GET /groups/{id}); opcional si Graph no permite leerlo. */
+  groupDisplayName?: string;
+  memberAdded: boolean;
+  graphError?: OperationalGroupGraphError;
 }
 
 export interface CreateUserResponse {
@@ -15,6 +34,12 @@ export interface CreateUserResponse {
   userPrincipalName: string;
   displayName: string;
   email: string;
+  message?: string;
+  /** Respuesta de alta operativo (Microsoft 365 + grupos). */
+  sede?: string;
+  groupObjectId?: string;
+  groupMemberAdded?: boolean;
+  groupMemberships?: OperationalGroupMembershipResult[];
 }
 
 export interface NextUsernameResponse {
@@ -59,6 +84,15 @@ export interface AdQueueRequestResult {
   email?: string;
 }
 
+/** Valores exactos enviados al backend (operativos). */
+export const OPERATIONAL_SEDE_OPTIONS = [
+  'Medellín',
+  'Segovia',
+  'Marmato',
+  'Bogotá',
+  'Bucaramanga',
+] as const;
+
 export interface UserFormData {
   primerNombre: string;
   segundoNombre: string;
@@ -66,6 +100,8 @@ export interface UserFormData {
   apellido2: string;
   puesto: string;
   departamento: string;
+  /** Solo pestaña operativa (obligatorio al crear operativo). */
+  sede: string;
   cedula: string;
   ciudad: string;
 }

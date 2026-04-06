@@ -35,11 +35,11 @@ const App: React.FC = () => {
         setAuthzError(null);
         await ensureUserInLogiGroup(account);
         if (!cancelled) setAuthorized(true);
-      } catch (e: any) {
+      } catch (e: unknown) {
         if (!cancelled) {
           setAuthorized(false);
           setAuthzError(
-            typeof e?.message === 'string'
+            e instanceof Error && typeof e.message === 'string'
               ? e.message
               : 'No fue posible validar autorización.'
           );

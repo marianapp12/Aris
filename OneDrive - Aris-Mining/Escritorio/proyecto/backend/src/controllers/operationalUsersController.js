@@ -1,6 +1,18 @@
 import { createUserInMicrosoft365, getNextAvailableUsername } from '../services/graphUserService.js';
+import { addUserToGroup, getGroupDisplayName } from '../services/graphGroupMemberService.js';
+import {
+  isValidOperationalSede,
+  getGroupObjectIdForSede,
+  OPERATIONAL_SEDE_VALUES,
+} from '../config/operationalSede.js';
+import {
+  getOperationalCommonGroupSlots,
+  getOperationalCommonGroupDisplayNameSlots,
+} from '../config/operationalGroups.js';
 import { logGraphApiError } from '../utils/graphApiErrors.js';
 import XLSX from 'xlsx';
+
+const OPERATIONAL_SEDE_LIST = OPERATIONAL_SEDE_VALUES.join(', ');
 
 /** Controladoe de node.js creacion de usuarios en microsoft 365 */
 
@@ -17,12 +29,128 @@ const toTitleCase = (value) =>
 const onlyLettersRegex = /[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s-]/;
 const hasInvalidCharsForName = (value) => value && onlyLettersRegex.test(value);
 
+/** Normaliza nombre de columna Excel: trim, espacios internos colapsados, minúsculas */
+const normalizeBulkColumnKey = (key) =>
+  String(key ?? '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+
+/**
+ * Obtiene el valor de la columna Sede aunque el encabezado varíe (Sede, sede, SEDE, espacios).
+ */
+function pickSedeFromBulkRow(row) {
+  if (!row || typeof row !== 'object') return '';
+  const candidates = ['Sede', 'sede', 'SEDE'];
+  for (const k of candidates) {
+    if (Object.prototype.hasOwnProperty.call(row, k)) {
+      const v = row[k];
+      if (v !== undefined && v !== null && String(v).trim()) return String(v).trim();
+    }
+  }
+  for (const key of Object.keys(row)) {
+    if (normalizeBulkColumnKey(key) === 'sede') {
+      const v = row[key];
+      if (v !== undefined && v !== null && String(v).trim()) return String(v).trim();
+    }
+  }
+  return '';
+}
+
+/**
+ * Grupo por sede primero, luego ranuras comunes desde OPERATIONAL_COMMON_GROUP_IDS.
+ * Dedupe de Object ID: no repite POST a Graph; el usuario ya quedó miembro en la primera asignación.
+ *
+ * @param {string} sedeNorm
+ * @param {string} userObjectId
+ * @returns {Promise<{ kind: 'sede' | 'common'; groupObjectId?: string; groupDisplayName?: string; memberAdded: boolean; graphError?: { httpStatus?: number; code?: string; message?: string } }[]>}
+ */
+async function enrichGroupMembershipsWithDisplayNames(memberships) {
+  const commonLabels = getOperationalCommonGroupDisplayNameSlots();
+  const out = [];
+  for (const m of memberships) {
+    const { commonSlotIndex, ...rest } = m;
+    if (!m.groupObjectId) {
+      out.push(rest);
+      continue;
+    }
+    let groupDisplayName = await getGroupDisplayName(m.groupObjectId);
+    if (
+      !groupDisplayName &&
+      m.kind === 'common' &&
+      typeof commonSlotIndex === 'number' &&
+      commonLabels[commonSlotIndex]
+    ) {
+      groupDisplayName = commonLabels[commonSlotIndex];
+    }
+    out.push({
+      ...rest,
+      ...(groupDisplayName ? { groupDisplayName } : {}),
+    });
+  }
+  return out;
+}
+
+async function applyOperationalGroupMemberships(sedeNorm, userObjectId) {
+  const sedeId = getGroupObjectIdForSede(sedeNorm);
+  const commonSlots = getOperationalCommonGroupSlots();
+
+  /** @type {{ id: string | null; kind: 'sede' | 'common'; commonSlotIndex?: number }[]} */
+  const slots = [{ id: sedeId, kind: 'sede' }];
+  let commonIdx = 0;
+  for (const part of commonSlots) {
+    slots.push({
+      id: part ? part : null,
+      kind: 'common',
+      commonSlotIndex: commonIdx,
+    });
+    commonIdx += 1;
+  }
+
+  const seen = new Set();
+  /** @type {{ kind: 'sede' | 'common'; commonSlotIndex?: number; groupObjectId?: string; memberAdded: boolean; graphError?: { httpStatus?: number; code?: string; message?: string } }[]} */
+  const memberships = [];
+
+  for (const slot of slots) {
+    const commonMeta =
+      slot.kind === 'common' && slot.commonSlotIndex !== undefined
+        ? { commonSlotIndex: slot.commonSlotIndex }
+        : {};
+
+    if (!slot.id) {
+      memberships.push({ kind: slot.kind, memberAdded: false, ...commonMeta });
+      continue;
+    }
+    const key = slot.id.toLowerCase();
+    if (seen.has(key)) {
+      memberships.push({
+        kind: slot.kind,
+        groupObjectId: slot.id,
+        memberAdded: true,
+        ...commonMeta,
+      });
+      continue;
+    }
+    seen.add(key);
+    const addResult = await addUserToGroup(slot.id, userObjectId);
+    memberships.push({
+      kind: slot.kind,
+      groupObjectId: slot.id,
+      memberAdded: addResult.ok,
+      ...(addResult.graphError ? { graphError: addResult.graphError } : {}),
+      ...commonMeta,
+    });
+  }
+
+  return enrichGroupMembershipsWithDisplayNames(memberships);
+}
+
 /**
  * Controlador para crear un usuario operativo
  */
 export const createOperationalUser = async (req, res, next) => {
   try {
-    const { givenName, surname1, surname2, jobTitle, department } = req.body;
+    const { givenName, surname1, surname2, jobTitle, department, sede } = req.body;
 
     // Validación de campos obligatorios
     if (!givenName || !surname1 || !jobTitle || !department) {
@@ -31,6 +159,15 @@ export const createOperationalUser = async (req, res, next) => {
         message: 'Los campos nombre, primer apellido, puesto y departamento son obligatorios',
       });
     }
+
+    if (!isValidOperationalSede(sede)) {
+      return res.status(400).json({
+        error: 'Sede inválida',
+        message: `El campo sede es obligatorio y debe ser uno de: ${OPERATIONAL_SEDE_LIST}.`,
+      });
+    }
+
+    const sedeNorm = String(sede).trim();
 
     // Validación de longitud mínima colocar mas
     if (givenName.trim().length < 3 || surname1.trim().length < 3) {
@@ -64,6 +201,13 @@ export const createOperationalUser = async (req, res, next) => {
       department: department.trim(),
     });
 
+    const groupMemberships = await applyOperationalGroupMemberships(sedeNorm, result.id);
+    const sedeMembership = groupMemberships.find((m) => m.kind === 'sede');
+    const groupId = sedeMembership?.groupObjectId;
+    const groupMemberAdded = Boolean(
+      sedeMembership?.groupObjectId && sedeMembership.memberAdded
+    );
+
     // Respuesta exitosa
     res.status(201).json({
       id: result.id,
@@ -71,6 +215,10 @@ export const createOperationalUser = async (req, res, next) => {
       displayName: result.displayName,
       email: result.userPrincipalName, // El userPrincipalName ya incluye el dominio
       message: 'Usuario creado exitosamente en Microsoft 365',
+      sede: sedeNorm,
+      groupMemberships,
+      ...(groupId ? { groupObjectId: groupId } : {}),
+      groupMemberAdded,
     });
   } catch (error) {
     logGraphApiError('crear usuario operativo', error);
@@ -145,9 +293,9 @@ export const getNextUsername = async (req, res) => {
  * Carga masiva de usuarios desde un archivo de Excel.
  * El archivo debe tener:
  *  - Fila 1: título (ej. "ARIS MINING") – se ignora
- *  - Fila 2: encabezados exactos:
- *      PrimerNombre | SegundoNombre | PrimerApellido | SegundoApellido | Puesto | Departamento
- *  - Fila 3+: datos
+ *  - Fila 2: encabezados (columna Sede: se reconoce como "Sede" con cualquier mayúsculas/espacios):
+ *      PrimerNombre | SegundoNombre | PrimerApellido | SegundoApellido | Puesto | Departamento | Sede
+ *  - Fila 3+: datos (columna Sede: un valor de OPERATIONAL_SEDE_VALUES en operationalSede.js)
  */
 export const createOperationalUsersBulk = async (req, res) => {
   try {
@@ -191,6 +339,7 @@ export const createOperationalUsersBulk = async (req, res) => {
       const segundoApellido = (row.SegundoApellido || '').toString().trim();
       const puesto = (row.Puesto || '').toString().trim();
       const departamento = (row.Departamento || '').toString().trim();
+      const sedeRaw = pickSedeFromBulkRow(row);
 
       // Validación mínima por fila
       if (!primerNombre || !primerApellido || !puesto || !departamento) {
@@ -199,6 +348,16 @@ export const createOperationalUsersBulk = async (req, res) => {
           status: 'error',
           message:
             'Faltan campos obligatorios (PrimerNombre, PrimerApellido, Puesto, Departamento).',
+        });
+        continue;
+      }
+
+      if (!isValidOperationalSede(sedeRaw)) {
+        results.push({
+          row: rowNumber,
+          status: 'error',
+          message:
+            `Sede inválida o faltante. Use exactamente uno de: ${OPERATIONAL_SEDE_LIST} (columna Sede).`,
         });
         continue;
       }
@@ -219,7 +378,8 @@ export const createOperationalUsersBulk = async (req, res) => {
         (segundoNombre && segundoNombre.length > maxLength) ||
         (segundoApellido && segundoApellido.length > maxLength) ||
         puesto.length > maxLength ||
-        departamento.length > maxLength
+        departamento.length > maxLength ||
+        sedeRaw.length > maxLength
       ) {
         results.push({
           row: rowNumber,
@@ -273,6 +433,8 @@ export const createOperationalUsersBulk = async (req, res) => {
 
       const givenName = [primerNombreNorm, segundoNombreNorm].filter(Boolean).join(' ');
 
+      const sedeNorm = sedeRaw;
+
       try {
         const created = await createUserInMicrosoft365({
           givenName,
@@ -282,12 +444,23 @@ export const createOperationalUsersBulk = async (req, res) => {
           department: departamentoNorm,
         });
 
+        const groupMemberships = await applyOperationalGroupMemberships(sedeNorm, created.id);
+        const sedeMembership = groupMemberships.find((m) => m.kind === 'sede');
+        const groupId = sedeMembership?.groupObjectId;
+        const groupMemberAdded = Boolean(
+          sedeMembership?.groupObjectId && sedeMembership.memberAdded
+        );
+
         results.push({
           row: rowNumber,
           status: 'success',
           id: created.id,
           userPrincipalName: created.userPrincipalName,
           displayName: created.displayName,
+          sede: sedeNorm,
+          groupMemberships,
+          ...(groupId ? { groupObjectId: groupId } : {}),
+          groupMemberAdded,
         });
       } catch (error) {
         logGraphApiError(`crear usuario operativo masivo fila ${rowNumber}`, error);
