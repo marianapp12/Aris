@@ -28,6 +28,11 @@ const AD_UPN_SUFFIX =
 const EMPLOYEE_ID_MIN = 5;
 const EMPLOYEE_ID_MAX = 32;
 
+/** Alineado con operationalUsersController (código postal operativo). */
+const OPERATIONAL_POSTAL_MIN = 4;
+const OPERATIONAL_POSTAL_MAX = 10;
+const JOB_DEPT_ALLOWED_RE = /^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ0-9\s.,\-/&()+]+$/;
+
 /** Misma contraseña inicial que graphUserService.js (operativos / Microsoft 365). */
 export const INITIAL_PASSWORD_M365 = 'Aris1234*';
 
@@ -281,6 +286,7 @@ const CreateUserForm = () => {
     puesto: '',
     departamento: '',
     sede: '',
+    postalCode: '',
     cedula: '',
     ciudad: '',
   });
@@ -557,6 +563,33 @@ const CreateUserForm = () => {
       return '';
     }
 
+    if (name === 'postalCode') {
+      const t = value.replace(/\s/g, '').trim();
+      if (!t) {
+        return userCreationType === 'operational' || userCreationType === 'administrative'
+          ? 'El código postal es obligatorio'
+          : '';
+      }
+      if (
+        !/^\d+$/.test(t) ||
+        t.length < OPERATIONAL_POSTAL_MIN ||
+        t.length > OPERATIONAL_POSTAL_MAX
+      ) {
+        return `Solo números, entre ${OPERATIONAL_POSTAL_MIN} y ${OPERATIONAL_POSTAL_MAX} dígitos`;
+      }
+      return '';
+    }
+
+    if (name === 'puesto' || name === 'departamento') {
+      const t = value.trim();
+      if (t.length < 3) return 'Debe tener al menos 3 caracteres';
+      if (t.length > 50) return 'No puede exceder 50 caracteres';
+      if (!JOB_DEPT_ALLOWED_RE.test(t)) {
+        return 'Use solo letras, números, espacios y . , - / & ( ) +';
+      }
+      return '';
+    }
+
     if (value.length < 3) return 'Debe tener al menos 3 caracteres';
     if (value.length > 50) return 'No puede exceder 50 caracteres';
 
@@ -581,6 +614,9 @@ const CreateUserForm = () => {
       'puesto',
       'departamento',
     ];
+    if (userCreationType === 'operational' || userCreationType === 'administrative') {
+      required.push('postalCode');
+    }
 
     const allFields: (keyof UserFormData)[] = [
       'primerNombre',
@@ -589,6 +625,9 @@ const CreateUserForm = () => {
       'apellido2',
       'puesto',
       'departamento',
+      ...(userCreationType === 'operational' || userCreationType === 'administrative'
+        ? (['postalCode'] as const)
+        : []),
       'sede',
       'cedula',
       'ciudad',
@@ -614,6 +653,13 @@ const CreateUserForm = () => {
       }
 
       if (field === 'cedula') {
+        const error = validateField(field, value);
+        if (error) newErrors[field] = error;
+        return;
+      }
+
+      if (field === 'postalCode') {
+        if (userCreationType !== 'operational' && userCreationType !== 'administrative') return;
         const error = validateField(field, value);
         if (error) newErrors[field] = error;
         return;
@@ -802,12 +848,16 @@ const CreateUserForm = () => {
         jobTitle: puestoNorm,
         department: departamentoNorm,
         ...(userCreationType === 'operational'
-          ? { sede: formData.sede.trim() }
+          ? {
+              sede: formData.sede.trim(),
+              postalCode: formData.postalCode.replace(/\s/g, '').trim(),
+            }
           : {}),
         ...(userCreationType === 'administrative'
           ? {
               employeeId: formData.cedula.trim(),
               city: formData.ciudad.trim() || undefined,
+              postalCode: formData.postalCode.replace(/\s/g, '').trim(),
             }
           : {}),
       };
@@ -882,6 +932,7 @@ const CreateUserForm = () => {
       puesto: '',
       departamento: '',
       sede: '',
+      postalCode: '',
       cedula: '',
       ciudad: '',
     });
@@ -1636,11 +1687,12 @@ const CreateUserForm = () => {
             </p>
           </div>
         )}
+
       </section>
 
       {userCreationType === 'administrative' && (
         <section className="dark-section">
-          <h3 className="section-title">CÉDULA / ID Y CIUDAD</h3>
+          <h3 className="section-title">CÉDULA / ID, CIUDAD Y CÓDIGO POSTAL</h3>
           <div className="two-col">
             <div className="field-group">
               <label>CÉDULA / ID EMPLEADO *</label>
@@ -1652,6 +1704,46 @@ const CreateUserForm = () => {
               <input name="ciudad" value={formData.ciudad} onChange={handleChange} />
               {errors.ciudad && <p className="error-text">{errors.ciudad}</p>}
             </div>
+          </div>
+          <div className="field-group" style={{ marginTop: 16 }}>
+            <label>CÓDIGO POSTAL *</label>
+            <input
+              name="postalCode"
+              inputMode="numeric"
+              autoComplete="postal-code"
+              value={formData.postalCode}
+              onChange={handleChange}
+            />
+            {errors.postalCode && (
+              <p className="error-text">{errors.postalCode}</p>
+            )}
+            <p className="note" style={{ marginTop: 8 }}>
+              Solo números, sin letras; entre {OPERATIONAL_POSTAL_MIN} y {OPERATIONAL_POSTAL_MAX} dígitos.
+              En carga masiva administrativa use la columna «Codigo postal» (o CP, ZIP).
+            </p>
+          </div>
+        </section>
+      )}
+
+      {userCreationType === 'operational' && (
+        <section className="dark-section">
+          <h3 className="section-title">CÓDIGO POSTAL</h3>
+          <div className="field-group">
+            <label>CÓDIGO POSTAL *</label>
+            <input
+              name="postalCode"
+              inputMode="numeric"
+              autoComplete="postal-code"
+              value={formData.postalCode}
+              onChange={handleChange}
+            />
+            {errors.postalCode && (
+              <p className="error-text">{errors.postalCode}</p>
+            )}
+            <p className="note" style={{ marginTop: 8 }}>
+              Solo números, sin letras; entre {OPERATIONAL_POSTAL_MIN} y {OPERATIONAL_POSTAL_MAX}{' '}
+              dígitos. En carga masiva Excel use la columna «Codigo postal» (o CP, ZIP).
+            </p>
           </div>
         </section>
       )}
@@ -1716,19 +1808,74 @@ const CreateUserForm = () => {
               </div>
               <details className="bulk-upload-help">
                 <summary>Instrucciones y formato del Excel</summary>
-                <p className="note">
-                  Use «Descargar plantilla» si aún no tiene el archivo. Puede usar fila de título y
-                  encabezados en la fila siguiente, o encabezados en la fila 1. Se aceptan
-                  encabezados con espacios (p. ej. <strong>Primer Nombre</strong>), sinónimos
-                  (Nombre, Apellido, Apellido paterno / materno, columna <strong>Apellidos</strong> con
-                  «Alzate Penagos», Ubicación → Sede) y mayúsculas distintas. Para el correo
-                  institucional, <strong>primer apellido = paterno</strong> y segundo = materno; si hay
-                  dos columnas llamadas «Apellido», la segunda se toma como segundo apellido. Sede:
-                  valores exactos {OPERATIONAL_SEDE_OPTIONS.join(', ')}. El UPN en M365 prueba primero{' '}
-                  <code>nombre.apellido</code> sin número en orden fijo; si todas están ocupadas, prueba{' '}
-                  <code>.1</code> en cada combinación, luego <code>.2</code> en cada una, etc. (no es la misma regla
-                  que la cola administrativa en Active Directory).
-                </p>
+                <div className="bulk-help-body">
+                  <p className="bulk-help-intro">
+                    Use <strong>Descargar plantilla</strong> si aún no tiene el archivo. Cada fila que
+                    pase la validación crea el usuario en <strong>Microsoft 365</strong> (Entra ID) y se
+                    aplican las membresías de grupo según la <strong>sede</strong> y la configuración del
+                    servidor.
+                  </p>
+
+                  <h4 className="bulk-help-heading">Columnas, obligatoriedad y tipo de dato</h4>
+                  <p className="bulk-help-note bulk-help-note--emphasis">
+                    Use la <strong>plantilla descargable</strong> para no omitir columnas: el archivo debe
+                    traer <strong>todas las columnas previstas</strong>; en las marcadas como{' '}
+                    <strong>(opcional)</strong> puede dejar la celda <strong>vacía</strong>. En{' '}
+                    <strong>nombres y apellidos</strong> use solo letras (incluye tildes y ñ), espacios y
+                    guiones. En <strong>puesto y departamento</strong> también se permiten números y los
+                    signos <code>. , - / & ( ) +</code>. El <strong>código postal</strong> es solo dígitos;
+                    puede escribirlo como texto en Excel.
+                  </p>
+                  <ul className="bulk-help-list bulk-help-list--columns">
+                    <li>
+                      <strong>Primer nombre</strong> <span className="bulk-help-tag">(obligatorio)</span>{' '}
+                      · Texto (solo letras, espacios y guiones). Mínimo 3 caracteres.
+                    </li>
+                    <li>
+                      <strong>Segundo nombre</strong> <span className="bulk-help-tag">(opcional)</span>{' '}
+                      · Texto. Déjelo vacío si no aplica.
+                    </li>
+                    <li>
+                      <strong>Primer apellido</strong> <span className="bulk-help-tag">(obligatorio)</span>{' '}
+                      · Texto (solo letras, espacios y guiones). Mínimo 3 caracteres.
+                    </li>
+                    <li>
+                      <strong>Segundo apellido</strong> <span className="bulk-help-tag">(opcional)</span>{' '}
+                      · Texto. Celda vacía si no aplica. También puede usar una sola columna «Apellidos»
+                      con ambos apellidos, o dos columnas «Apellido» (1.º y 2.º), según la plantilla.
+                    </li>
+                    <li>
+                      <strong>Puesto</strong> <span className="bulk-help-tag">(obligatorio)</span> · Texto
+                      con los caracteres adicionales permitidos (véase el recuadro superior). Máximo 50
+                      caracteres.
+                    </li>
+                    <li>
+                      <strong>Departamento</strong> <span className="bulk-help-tag">(obligatorio)</span> ·
+                      Igual criterio que puesto. Máximo 50 caracteres.
+                    </li>
+                    <li>
+                      <strong>Sede</strong> <span className="bulk-help-tag">(obligatorio)</span> · Texto.
+                      Debe coincidir <strong>exactamente</strong> con uno de estos valores:{' '}
+                      {OPERATIONAL_SEDE_OPTIONS.join(', ')}.
+                    </li>
+                    <li>
+                      <strong>Código postal</strong> <span className="bulk-help-tag">(obligatorio)</span>{' '}
+                      · Solo dígitos, entre 4 y 10 (sin letras ni símbolos). Encabezados admitidos, por
+                      ejemplo: Codigo postal, CP, ZIP.
+                    </li>
+                  </ul>
+
+                  <h4 className="bulk-help-heading">Qué ocurre al cargar el archivo</h4>
+                  <p className="bulk-help-note">
+                    El servidor procesa las filas y llama a Microsoft Graph para crear cada cuenta. El
+                    correo y el nombre de usuario (<strong>UPN</strong>) se generan con reglas propias de{' '}
+                    <strong>operativos</strong> (combinaciones de nombres y apellidos; si hace falta,
+                    sufijos <code>.1</code>, <code>.2</code>, etc.). Esa lógica{' '}
+                    <strong>no es la misma</strong> que la de usuarios administrativos en la cola de
+                    Active Directory. Tras la creación se intenta agregar al usuario a los grupos de M365
+                    configurados (sede y grupos comunes).
+                  </p>
+                </div>
               </details>
             </div>
           </div>
@@ -1792,18 +1939,71 @@ const CreateUserForm = () => {
               </div>
               <details className="bulk-upload-help">
                 <summary>Instrucciones y formato del Excel</summary>
-                <p className="note">
-                  Use «Descargar plantilla» si aún no tiene el archivo. Puede usar fila 1 solo con
-                  encabezados y datos desde fila 2, o fila 1 título + fila 2 encabezados + datos
-                  desde fila 3 (el sistema detecta el formato).                   Columnas: Primer Nombre /
-                  PrimerNombre, Segundo Nombre, apellidos (paterno / materno o columna{' '}
-                  <strong>Apellidos</strong> «Alzate Penagos»; dos columnas «Apellido» = 1.º y 2.º),
-                  Puesto, Departamento, <strong>Cédula</strong> (obligatoria; también Documento) y{' '}
-                  <strong>Ciudad</strong> (opcional). La cédula: al menos 5 caracteres (mejor formato
-                  texto en Excel). Cada
-                  fila válida genera un archivo <code>{'pendiente-{uuid}.json'}</code> en la carpeta
-                  compartida.
-                </p>
+                <div className="bulk-help-body">
+                  <p className="bulk-help-intro">
+                    Use <strong>Descargar plantilla</strong> si aún no tiene el archivo. Cada fila que
+                    pase la validación se encola como un archivo JSON en la carpeta compartida de
+                    Active Directory.
+                  </p>
+
+                  <h4 className="bulk-help-heading">Columnas, obligatoriedad y tipo de dato</h4>
+                  <p className="bulk-help-note bulk-help-note--emphasis">
+                    Use la <strong>plantilla descargable</strong> para no omitir columnas: el archivo debe
+                    traer <strong>todas las columnas previstas</strong>; en las marcadas como{' '}
+                    <strong>(opcional)</strong> puede dejar la celda <strong>vacía</strong>. Salvo donde
+                    se indica «solo dígitos», el contenido se interpreta como <strong>texto</strong>{' '}
+                    (incluido documento y código postal, para evitar cambios automáticos de Excel).
+                  </p>
+                  <ul className="bulk-help-list bulk-help-list--columns">
+                    <li>
+                      <strong>Primer nombre</strong> <span className="bulk-help-tag">(obligatorio)</span>{' '}
+                      · Texto. Mínimo 3 caracteres.
+                    </li>
+                    <li>
+                      <strong>Segundo nombre</strong> <span className="bulk-help-tag">(opcional)</span>{' '}
+                      · Texto. Déjelo vacío si la persona no tiene segundo nombre.
+                    </li>
+                    <li>
+                      <strong>Primer apellido</strong> <span className="bulk-help-tag">(obligatorio)</span>{' '}
+                      · Texto. Mínimo 3 caracteres.
+                    </li>
+                    <li>
+                      <strong>Segundo apellido</strong> <span className="bulk-help-tag">(opcional)</span>{' '}
+                      · Texto. Celda vacía si no aplica. También puede usar una sola columna «Apellidos»
+                      con ambos apellidos, o dos columnas «Apellido» (1.º y 2.º), según la plantilla.
+                    </li>
+                    <li>
+                      <strong>Puesto</strong> <span className="bulk-help-tag">(obligatorio)</span> · Texto.
+                    </li>
+                    <li>
+                      <strong>Departamento</strong> <span className="bulk-help-tag">(obligatorio)</span> ·
+                      Texto.
+                    </li>
+                    <li>
+                      <strong>Documento / cédula / ID empleado</strong>{' '}
+                      <span className="bulk-help-tag">(obligatorio)</span> · Texto. Entre 5 y 32
+                      caracteres (alfanumérico y guiones). En Excel aplique formato de celda{' '}
+                      <strong>Texto</strong> para no perder ceros a la izquierda.
+                    </li>
+                    <li>
+                      <strong>Ciudad</strong> <span className="bulk-help-tag">(opcional)</span> · Texto.
+                      Vacía si no desea informarla.
+                    </li>
+                    <li>
+                      <strong>Código postal</strong> <span className="bulk-help-tag">(obligatorio)</span>{' '}
+                      · Solo dígitos, entre 4 y 10 (sin letras ni símbolos). Puede escribirlo como texto
+                      en Excel. Encabezados admitidos: Codigo postal, CP, ZIP, etc.
+                    </li>
+                  </ul>
+
+                  <h4 className="bulk-help-heading">Qué ocurre al cargar el archivo</h4>
+                  <p className="bulk-help-note">
+                    Cada fila válida genera un archivo{' '}
+                    <code className="bulk-help-code">pendiente-{'{uuid}'}.json</code> en la carpeta de
+                    cola configurada en el servidor. El script de Active Directory lee esos archivos y
+                    crea el usuario en Active Directory.
+                  </p>
+                </div>
               </details>
             </div>
           </div>
