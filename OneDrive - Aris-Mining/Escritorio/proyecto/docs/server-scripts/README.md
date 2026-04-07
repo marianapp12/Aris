@@ -13,10 +13,32 @@ El backend Node escribe archivos `pendiente-{uuid}.json` en la ruta UNC definida
 ### Ejemplo de Tarea programada
 
 1. Copiar `Process-AdUserQueue.ps1` a `C:\scripts\` en el servidor.
-2. Abrir **Programador de tareas** → **Crear tarea** (no tarea básica).
+2. Abrir **Programador de tareas** (`taskschd.msc`) → **Crear tarea** (no tarea básica).
 3. **General**: ejecutar tanto si el usuario inició sesión como si no; usuario con permisos en AD.
-4. **Desencadenadores**: repetir cada **5 minutos** (o 1–5 min según volumen).
-5. **Acciones** → **Iniciar un programa**:
+
+### Frecuencia del desencadenador (latencia de la cola)
+
+El backend solo escribe archivos en `pending`; hasta que esta tarea **no ejecute** el script, no hay alta en AD. El intervalo de repetición acota el **tiempo máximo de espera** (p. ej. con 5 minutos una solicitud puede tardar casi 5 minutos aunque el script solo tarde segundos).
+
+**Intervalos recomendados**
+
+| Intervalo | Uso típico |
+|-----------|------------|
+| **1 minuto** | Equilibrio entre rapidez y carga en el servidor y el controlador de dominio. |
+| **30 segundos** | Máxima rapidez percibida; adecuado si el volumen es bajo. |
+| **5 minutos** | Muy bajo volumen o políticas que limitan ejecuciones frecuentes. |
+
+**Pasos en el Programador de tareas (frecuencia y concurrencia)**
+
+a. Pestaña **Desencadenadores** → seleccionar o crear un desencadenador (p. ej. al iniciar el sistema, o una vez al día con repetición).
+b. **Editar** el desencadenador → en la zona avanzada, activar **Repetir la tarea cada:** y elegir **1 minuto** (o **30 segundos**, etc.).
+c. **Durante un periodo de:** **Indefinidamente** (o acotar al horario laboral si aplica).
+d. Pestaña **Configuración**: en **Si la tarea ya se está ejecutando, aplicar la siguiente regla**, elija **No iniciar una nueva instancia**. Así se evitan dos procesos simultáneos sobre la misma carpeta `pending` y posibles condiciones de carrera.
+e. Aceptar los cuadros de diálogo. Para probar de inmediato: clic derecho en la tarea → **Ejecutar**.
+
+### Acciones y resto de opciones
+
+4. **Acciones** → **Iniciar un programa**:
    - Programa: `powershell.exe`
    - Argumentos (ajustar rutas y OU):
 
@@ -24,11 +46,13 @@ El backend Node escribe archivos `pendiente-{uuid}.json` en la ruta UNC definida
 -NoProfile -ExecutionPolicy Bypass -File "C:\scripts\Process-AdUserQueue.ps1" -QueuePath "\\10.10.11.9\scripts\pending" -OrganizationalUnit "OU=Administrativos,DC=corp,DC=local" -DefaultCompany "Mi Empresa"
 ```
 
-6. Si el JSON incluye `queueMetadata.ouDn` (por `AD_QUEUE_OU_DN` en Node), ese DN tiene prioridad sobre `-OrganizationalUnit`.
+5. Si el JSON incluye `queueMetadata.ouDn` (por `AD_QUEUE_OU_DN` en Node), ese DN tiene prioridad sobre `-OrganizationalUnit`.
 
-7. **Correo y organización en AD:** el script asigna `-EmailAddress` con el campo `email` del JSON (si falta, usa el UPN). El atributo **Company** se toma de `empresa` (env `AD_QUEUE_COMPANY` en Node), o `company` en el JSON, o `queueMetadata.company`, o `-DefaultCompany` en la tarea.
+6. **Correo y organización en AD:** el script asigna `-EmailAddress` con el campo `email` del JSON (si falta, usa el UPN). El atributo **Company** se toma de `empresa` (env `AD_QUEUE_COMPANY` en Node), o `company` en el JSON, o `queueMetadata.company`, o `-DefaultCompany` en la tarea.
 
-8. **Cédula / ID:** el JSON debe incluir **`employeeId`** (obligatorio). El script rechaza duplicados en AD (`EmployeeID`) antes de crear el usuario.
+7. **Cédula / ID:** el JSON debe incluir **`employeeId`** (obligatorio). El script rechaza duplicados en AD (`EmployeeID`) antes de crear el usuario.
+
+**Nota (backend Node):** la limpieza de archivos en `procesados` frente a Microsoft Graph (`AD_PROCESSED_GRAPH_SYNC_INTERVAL_MS` en el backend, por defecto ~60 s) es un proceso **aparte** del script AD; no sustituye esta tarea programada.
 
 ### Errores
 

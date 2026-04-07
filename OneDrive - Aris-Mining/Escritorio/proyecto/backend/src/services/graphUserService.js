@@ -1,6 +1,6 @@
 import { getGraphClient } from '../config/graphClient.js';
 import {
-  pickFirstAvailableSamAndUpn,
+  pickFirstAvailableSamAndUpnForOperational,
   NO_UPN_CANDIDATES_EXHAUSTED,
 } from './graphUpnCandidatePicker.js';
 
@@ -10,14 +10,44 @@ const OPERATIONAL_UPN_DOMAIN =
 
 const INITIAL_PASSWORD = 'Aris1234*';
 
-const generateUniqueUserPrincipalName = async (graphClient, givenName, surname1, surname2) => {
+/** Evita condición de carrera en carga masiva: solo una creación (pick UPN + POST) a la vez. */
+let graphUserCreateChain = Promise.resolve();
+
+/**
+ * @template T
+ * @param {() => Promise<T>} task
+ * @returns {Promise<T>}
+ */
+function enqueueGraphUserCreate(task) {
+  const run = graphUserCreateChain.then(() => task());
+  graphUserCreateChain = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
+
+/**
+ * @param {Set<string> | undefined} bulkReservedUpnLower - UPN en minúsculas ya reservados en la misma carga masiva.
+ */
+const generateUniqueUserPrincipalName = async (
+  graphClient,
+  givenName,
+  surname1,
+  surname2,
+  bulkReservedUpnLower
+) => {
   try {
-    const { samAccountName, userPrincipalName } = await pickFirstAvailableSamAndUpn(graphClient, {
-      givenName,
-      surname1,
-      surname2: surname2?.trim() || '',
-      emailDomain: OPERATIONAL_UPN_DOMAIN,
-    });
+    const { samAccountName, userPrincipalName } = await pickFirstAvailableSamAndUpnForOperational(
+      graphClient,
+      {
+        givenName,
+        surname1,
+        surname2: surname2?.trim() || '',
+        emailDomain: OPERATIONAL_UPN_DOMAIN,
+        ...(bulkReservedUpnLower ? { bulkReservedUpnLower } : {}),
+      }
+    );
     return { localPart: samAccountName, userPrincipalName };
   } catch (err) {
     if (err?.code === NO_UPN_CANDIDATES_EXHAUSTED) {
@@ -29,7 +59,7 @@ const generateUniqueUserPrincipalName = async (graphClient, givenName, surname1,
 
 /**
  * Obtiene el siguiente nombre de usuario disponible (sin crear el usuario).
- * Usa la misma lógica que createUserInMicrosoft365 (iterateLocalPartCandidates + disponibilidad UPN/mailNickname en Graph).
+ * Usa la misma lógica que createUserInMicrosoft365 (candidatos operativos M365 + Graph).
  */
 export const getNextAvailableUsername = async ({ givenName, surname1, surname2 }) => {
   const graphClient = getGraphClient();
@@ -43,9 +73,16 @@ export const getNextAvailableUsername = async ({ givenName, surname1, surname2 }
 };
 
 /**
- * Crea un usuario en Microsoft 365
+ * Cuerpo serializado: pick UPN + POST (y un reintento en 409 con nuevo UPN).
  */
-export const createUserInMicrosoft365 = async ({ givenName, surname1, surname2, jobTitle, department }) => {
+async function createUserInMicrosoft365Serialized({
+  givenName,
+  surname1,
+  surname2,
+  jobTitle,
+  department,
+  bulkReservedUpnLower,
+}) {
   const graphClient = getGraphClient();
 
   const fullSurname = [surname1, surname2]
@@ -54,40 +91,53 @@ export const createUserInMicrosoft365 = async ({ givenName, surname1, surname2, 
     .join(' ');
   const displayName = `${givenName.trim()} ${fullSurname}`.trim();
 
-  const { localPart, userPrincipalName } = await generateUniqueUserPrincipalName(
-    graphClient,
-    givenName,
-    surname1,
-    surname2
-  );
+  let lastError;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const { localPart, userPrincipalName } = await generateUniqueUserPrincipalName(
+      graphClient,
+      givenName,
+      surname1,
+      surname2,
+      bulkReservedUpnLower
+    );
 
-  const newUser = {
-    accountEnabled: true,
-    displayName: displayName,
-    mailNickname: localPart,
-    userPrincipalName: userPrincipalName,
-    givenName: givenName.trim(),
-    surname: surname1.trim(),
-    passwordProfile: {
-      password: INITIAL_PASSWORD,
-      forceChangePasswordNextSignIn: true,
-    },
-    jobTitle: jobTitle,
-    department: department,
-  };
-
-  try {
-    const createdUser = await graphClient.api('/users').post(newUser);
-
-    return {
-      id: createdUser.id,
-      userPrincipalName: createdUser.userPrincipalName,
-      displayName: createdUser.displayName,
+    const newUser = {
+      accountEnabled: true,
+      displayName: displayName,
+      mailNickname: localPart,
+      userPrincipalName: userPrincipalName,
+      givenName: givenName.trim(),
+      surname: surname1.trim(),
+      passwordProfile: {
+        password: INITIAL_PASSWORD,
+        forceChangePasswordNextSignIn: true,
+      },
+      jobTitle: jobTitle,
+      department: department,
     };
-  } catch (error) {
-    if (error.statusCode) {
-      error.statusCode = error.statusCode;
+
+    try {
+      const createdUser = await graphClient.api('/users').post(newUser);
+      return {
+        id: createdUser.id,
+        userPrincipalName: createdUser.userPrincipalName,
+        displayName: createdUser.displayName,
+      };
+    } catch (error) {
+      lastError = error;
+      const isConflict = error.statusCode === 409;
+      if (isConflict && attempt === 0) {
+        continue;
+      }
+      throw error;
     }
-    throw error;
   }
+  throw lastError;
+}
+
+/**
+ * Crea un usuario en Microsoft 365 (cola interna: evita UPN duplicado por paralelismo en bulk).
+ */
+export const createUserInMicrosoft365 = async (params) => {
+  return enqueueGraphUserCreate(() => createUserInMicrosoft365Serialized(params));
 };

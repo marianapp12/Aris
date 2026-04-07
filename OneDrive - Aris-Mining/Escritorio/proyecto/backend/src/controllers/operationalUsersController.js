@@ -10,6 +10,8 @@ import {
   getOperationalCommonGroupDisplayNameSlots,
 } from '../config/operationalGroups.js';
 import { logGraphApiError } from '../utils/graphApiErrors.js';
+import { parseOperationalBulkSheet } from '../utils/excelOperationalBulkParse.js';
+import { mapWithConcurrency } from '../utils/asyncPool.js';
 import XLSX from 'xlsx';
 
 const OPERATIONAL_SEDE_LIST = OPERATIONAL_SEDE_VALUES.join(', ');
@@ -28,34 +30,6 @@ const toTitleCase = (value) =>
 /** Solo letras (incluye acentos, ñ, ü, espacios, guiones) para nombres y apellidos */
 const onlyLettersRegex = /[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s-]/;
 const hasInvalidCharsForName = (value) => value && onlyLettersRegex.test(value);
-
-/** Normaliza nombre de columna Excel: trim, espacios internos colapsados, minúsculas */
-const normalizeBulkColumnKey = (key) =>
-  String(key ?? '')
-    .trim()
-    .replace(/\s+/g, ' ')
-    .toLowerCase();
-
-/**
- * Obtiene el valor de la columna Sede aunque el encabezado varíe (Sede, sede, SEDE, espacios).
- */
-function pickSedeFromBulkRow(row) {
-  if (!row || typeof row !== 'object') return '';
-  const candidates = ['Sede', 'sede', 'SEDE'];
-  for (const k of candidates) {
-    if (Object.prototype.hasOwnProperty.call(row, k)) {
-      const v = row[k];
-      if (v !== undefined && v !== null && String(v).trim()) return String(v).trim();
-    }
-  }
-  for (const key of Object.keys(row)) {
-    if (normalizeBulkColumnKey(key) === 'sede') {
-      const v = row[key];
-      if (v !== undefined && v !== null && String(v).trim()) return String(v).trim();
-    }
-  }
-  return '';
-}
 
 /**
  * Grupo por sede primero, luego ranuras comunes desde OPERATIONAL_COMMON_GROUP_IDS.
@@ -143,6 +117,137 @@ async function applyOperationalGroupMemberships(sedeNorm, userObjectId) {
   }
 
   return enrichGroupMembershipsWithDisplayNames(memberships);
+}
+
+function getOperationalBulkConcurrency() {
+  const n = Number(process.env.OPERATIONAL_BULK_CONCURRENCY);
+  if (Number.isFinite(n) && n >= 1 && n <= 20) return Math.floor(n);
+  return 3;
+}
+
+/**
+ * Una fila de la carga masiva Excel: validación + creación Graph + grupos.
+ * @param {Record<string, unknown>} row
+ * @param {number} rowNumber - fila en Excel (mensajes / resultado)
+ * @param {Set<string>} bulkReservedUpnLower - UPN en minúsculas ya reservados en este mismo request bulk
+ */
+async function processOperationalBulkRow(row, rowNumber, bulkReservedUpnLower) {
+  const primerNombre = (row.PrimerNombre || '').toString().trim();
+  const segundoNombre = (row.SegundoNombre || '').toString().trim();
+  const primerApellido = (row.PrimerApellido || '').toString().trim();
+  const segundoApellido = (row.SegundoApellido || '').toString().trim();
+  const puesto = (row.Puesto || '').toString().trim();
+  const departamento = (row.Departamento || '').toString().trim();
+  const sedeRaw = (row.Sede || '').toString().trim();
+
+  if (!primerNombre || !primerApellido || !puesto || !departamento) {
+    return {
+      row: rowNumber,
+      status: 'error',
+      message:
+        'Faltan campos obligatorios (PrimerNombre, PrimerApellido, Puesto, Departamento).',
+    };
+  }
+
+  if (!isValidOperationalSede(sedeRaw)) {
+    return {
+      row: rowNumber,
+      status: 'error',
+      message: `Sede inválida o faltante. Use exactamente uno de: ${OPERATIONAL_SEDE_LIST} (columna Sede).`,
+    };
+  }
+
+  if (primerNombre.length < 3 || primerApellido.length < 3) {
+    return {
+      row: rowNumber,
+      status: 'error',
+      message: 'PrimerNombre y PrimerApellido deben tener al menos 3 caracteres.',
+    };
+  }
+
+  const maxLength = 50;
+  if (
+    primerNombre.length > maxLength ||
+    primerApellido.length > maxLength ||
+    (segundoNombre && segundoNombre.length > maxLength) ||
+    (segundoApellido && segundoApellido.length > maxLength) ||
+    puesto.length > maxLength ||
+    departamento.length > maxLength ||
+    sedeRaw.length > maxLength
+  ) {
+    return {
+      row: rowNumber,
+      status: 'error',
+      message: `Los campos no pueden exceder ${maxLength} caracteres.`,
+    };
+  }
+
+  if (hasInvalidCharsForName(primerNombre)) {
+    return { row: rowNumber, status: 'error', message: 'PrimerNombre: solo se permiten letras.' };
+  }
+  if (segundoNombre && hasInvalidCharsForName(segundoNombre)) {
+    return { row: rowNumber, status: 'error', message: 'SegundoNombre: solo se permiten letras.' };
+  }
+  if (hasInvalidCharsForName(primerApellido)) {
+    return {
+      row: rowNumber,
+      status: 'error',
+      message: 'PrimerApellido: solo se permiten letras.',
+    };
+  }
+  if (segundoApellido && hasInvalidCharsForName(segundoApellido)) {
+    return {
+      row: rowNumber,
+      status: 'error',
+      message: 'SegundoApellido: solo se permiten letras.',
+    };
+  }
+
+  const primerNombreNorm = toTitleCase(primerNombre);
+  const segundoNombreNorm = segundoNombre ? toTitleCase(segundoNombre) : '';
+  const primerApellidoNorm = toTitleCase(primerApellido);
+  const segundoApellidoNorm = segundoApellido ? toTitleCase(segundoApellido) : '';
+  const puestoNorm = puesto.toUpperCase();
+  const departamentoNorm = departamento.toUpperCase();
+  const givenName = [primerNombreNorm, segundoNombreNorm].filter(Boolean).join(' ');
+  const sedeNorm = sedeRaw;
+
+  try {
+    const created = await createUserInMicrosoft365({
+      givenName,
+      surname1: primerApellidoNorm,
+      surname2: segundoApellidoNorm || undefined,
+      jobTitle: puestoNorm,
+      department: departamentoNorm,
+      bulkReservedUpnLower,
+    });
+
+    const groupMemberships = await applyOperationalGroupMemberships(sedeNorm, created.id);
+    const sedeMembership = groupMemberships.find((m) => m.kind === 'sede');
+    const groupId = sedeMembership?.groupObjectId;
+    const groupMemberAdded = Boolean(
+      sedeMembership?.groupObjectId && sedeMembership.memberAdded
+    );
+
+    return {
+      row: rowNumber,
+      status: 'success',
+      id: created.id,
+      userPrincipalName: created.userPrincipalName,
+      displayName: created.displayName,
+      sede: sedeNorm,
+      groupMemberships,
+      ...(groupId ? { groupObjectId: groupId } : {}),
+      groupMemberAdded,
+    };
+  } catch (error) {
+    logGraphApiError(`crear usuario operativo masivo fila ${rowNumber}`, error);
+    return {
+      row: rowNumber,
+      status: 'error',
+      message: error.message || 'Error al crear el usuario en Microsoft 365.',
+    };
+  }
 }
 
 /**
@@ -271,7 +376,11 @@ export const getNextUsername = async (req, res) => {
       });
     }
 
-    const result = await getNextAvailableUsername({ givenName, surname1, surname2 });
+    const result = await getNextAvailableUsername({
+      givenName,
+      surname1,
+      surname2,
+    });
     res.json(result);
   } catch (error) {
     logGraphApiError('next-username operativo', error);
@@ -291,11 +400,12 @@ export const getNextUsername = async (req, res) => {
 /**
  * POST /api/users/operational/bulk
  * Carga masiva de usuarios desde un archivo de Excel.
- * El archivo debe tener:
- *  - Fila 1: título (ej. "ARIS MINING") – se ignora
- *  - Fila 2: encabezados (columna Sede: se reconoce como "Sede" con cualquier mayúsculas/espacios):
- *      PrimerNombre | SegundoNombre | PrimerApellido | SegundoApellido | Puesto | Departamento | Sede
- *  - Fila 3+: datos (columna Sede: un valor de OPERATIONAL_SEDE_VALUES en operationalSede.js)
+ * Plantilla recomendada:
+ *  - Fila 1: título (opcional) — si existe, fila 2 = encabezados y datos desde fila 3
+ *  - Sin fila de título: fila 1 = encabezados, datos desde fila 2
+ * Encabezados: acepta "Primer Nombre", "PrimerNombre", sinónimos (Nombre→primer nombre, etc.) y Sede/Ubicación.
+ * Valores de Sede: OPERATIONAL_SEDE_VALUES (operationalSede.js).
+ * Concurrencia: OPERATIONAL_BULK_CONCURRENCY (1–20, por defecto 3).
  */
 export const createOperationalUsersBulk = async (req, res) => {
   try {
@@ -317,8 +427,7 @@ export const createOperationalUsersBulk = async (req, res) => {
       });
     }
 
-    // range: 1 → ignora la primera fila (título) y usa la segunda como encabezados
-    const rows = XLSX.utils.sheet_to_json(sheet, { range: 1 });
+    const { rows, firstDataExcelRow } = parseOperationalBulkSheet(sheet);
 
     if (!rows.length) {
       return res.status(400).json({
@@ -327,150 +436,15 @@ export const createOperationalUsersBulk = async (req, res) => {
       });
     }
 
-    const results = [];
-
-    for (let index = 0; index < rows.length; index++) {
-      const row = rows[index];
-      const rowNumber = index + 3; // datos comienzan en la fila 3
-
-      const primerNombre = (row.PrimerNombre || '').toString().trim();
-      const segundoNombre = (row.SegundoNombre || '').toString().trim();
-      const primerApellido = (row.PrimerApellido || '').toString().trim();
-      const segundoApellido = (row.SegundoApellido || '').toString().trim();
-      const puesto = (row.Puesto || '').toString().trim();
-      const departamento = (row.Departamento || '').toString().trim();
-      const sedeRaw = pickSedeFromBulkRow(row);
-
-      // Validación mínima por fila
-      if (!primerNombre || !primerApellido || !puesto || !departamento) {
-        results.push({
-          row: rowNumber,
-          status: 'error',
-          message:
-            'Faltan campos obligatorios (PrimerNombre, PrimerApellido, Puesto, Departamento).',
-        });
-        continue;
-      }
-
-      if (!isValidOperationalSede(sedeRaw)) {
-        results.push({
-          row: rowNumber,
-          status: 'error',
-          message:
-            `Sede inválida o faltante. Use exactamente uno de: ${OPERATIONAL_SEDE_LIST} (columna Sede).`,
-        });
-        continue;
-      }
-
-      if (primerNombre.length < 3 || primerApellido.length < 3) {
-        results.push({
-          row: rowNumber,
-          status: 'error',
-          message: 'PrimerNombre y PrimerApellido deben tener al menos 3 caracteres.',
-        });
-        continue;
-      }
-
-      const maxLength = 50;
-      if (
-        primerNombre.length > maxLength ||
-        primerApellido.length > maxLength ||
-        (segundoNombre && segundoNombre.length > maxLength) ||
-        (segundoApellido && segundoApellido.length > maxLength) ||
-        puesto.length > maxLength ||
-        departamento.length > maxLength ||
-        sedeRaw.length > maxLength
-      ) {
-        results.push({
-          row: rowNumber,
-          status: 'error',
-          message: `Los campos no pueden exceder ${maxLength} caracteres.`,
-        });
-        continue;
-      }
-
-      // Validación: solo letras en nombres y apellidos (igual que formulario individual)
-      if (hasInvalidCharsForName(primerNombre)) {
-        results.push({
-          row: rowNumber,
-          status: 'error',
-          message: 'PrimerNombre: solo se permiten letras.',
-        });
-        continue;
-      }
-      if (segundoNombre && hasInvalidCharsForName(segundoNombre)) {
-        results.push({
-          row: rowNumber,
-          status: 'error',
-          message: 'SegundoNombre: solo se permiten letras.',
-        });
-        continue;
-      }
-      if (hasInvalidCharsForName(primerApellido)) {
-        results.push({
-          row: rowNumber,
-          status: 'error',
-          message: 'PrimerApellido: solo se permiten letras.',
-        });
-        continue;
-      }
-      if (segundoApellido && hasInvalidCharsForName(segundoApellido)) {
-        results.push({
-          row: rowNumber,
-          status: 'error',
-          message: 'SegundoApellido: solo se permiten letras.',
-        });
-        continue;
-      }
-
-      // Normalización igual que formulario individual: Title Case nombres/apellidos, MAYÚSCULAS puesto/departamento
-      const primerNombreNorm = toTitleCase(primerNombre);
-      const segundoNombreNorm = segundoNombre ? toTitleCase(segundoNombre) : '';
-      const primerApellidoNorm = toTitleCase(primerApellido);
-      const segundoApellidoNorm = segundoApellido ? toTitleCase(segundoApellido) : '';
-      const puestoNorm = puesto.toUpperCase();
-      const departamentoNorm = departamento.toUpperCase();
-
-      const givenName = [primerNombreNorm, segundoNombreNorm].filter(Boolean).join(' ');
-
-      const sedeNorm = sedeRaw;
-
-      try {
-        const created = await createUserInMicrosoft365({
-          givenName,
-          surname1: primerApellidoNorm,
-          surname2: segundoApellidoNorm || undefined,
-          jobTitle: puestoNorm,
-          department: departamentoNorm,
-        });
-
-        const groupMemberships = await applyOperationalGroupMemberships(sedeNorm, created.id);
-        const sedeMembership = groupMemberships.find((m) => m.kind === 'sede');
-        const groupId = sedeMembership?.groupObjectId;
-        const groupMemberAdded = Boolean(
-          sedeMembership?.groupObjectId && sedeMembership.memberAdded
-        );
-
-        results.push({
-          row: rowNumber,
-          status: 'success',
-          id: created.id,
-          userPrincipalName: created.userPrincipalName,
-          displayName: created.displayName,
-          sede: sedeNorm,
-          groupMemberships,
-          ...(groupId ? { groupObjectId: groupId } : {}),
-          groupMemberAdded,
-        });
-      } catch (error) {
-        logGraphApiError(`crear usuario operativo masivo fila ${rowNumber}`, error);
-        results.push({
-          row: rowNumber,
-          status: 'error',
-          message: error.message || 'Error al crear el usuario en Microsoft 365.',
-        });
-      }
-    }
+    const rowJobs = rows.map((row, index) => ({
+      row,
+      rowNumber: index + firstDataExcelRow,
+    }));
+    const bulkReservedUpnLower = new Set();
+    const limit = getOperationalBulkConcurrency();
+    const results = await mapWithConcurrency(rowJobs, limit, ({ row, rowNumber }) =>
+      processOperationalBulkRow(row, rowNumber, bulkReservedUpnLower)
+    );
 
     res.status(201).json({
       message: 'Procesamiento masivo completado.',

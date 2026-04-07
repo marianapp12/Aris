@@ -47,8 +47,18 @@ function firstSamCandidate(givenName, surname1, surname2) {
   return truncateForSamAccountName(value);
 }
 
+function getAdQueueConnectionTestTimeoutMs() {
+  const n = Number(process.env.AD_QUEUE_CONNECTION_TEST_TIMEOUT_MS);
+  return Number.isFinite(n) && n >= 1000 && n <= 120000 ? Math.floor(n) : 8000;
+}
+
 function mapWriteError(err) {
   const code = err?.code;
+  if (code === 'ETIMEOUT') {
+    return err instanceof Error
+      ? err
+      : new Error('Tiempo de espera agotado al acceder a la carpeta de cola. Compruebe red, UNC y permisos SMB.');
+  }
   if (code === 'ENOENT' || code === 'ENOTDIR') {
     return new Error(
       'No se pudo escribir en la cola AD: la ruta no existe o no es accesible. Compruebe AD_QUEUE_UNC y permisos SMB.'
@@ -81,16 +91,37 @@ export async function testAdQueueUncWrite() {
 
   const id = randomUUID();
   const targetPath = joinQueuePath(uncPath, `conexion-prueba-${id}.tmp`);
+  const timeoutMs = getAdQueueConnectionTestTimeoutMs();
 
-  try {
+  const probe = async () => {
     await fs.writeFile(targetPath, 'ok\n', 'utf8');
     await fs.unlink(targetPath);
+  };
+
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      const err = new Error(
+        `Tiempo de espera agotado (${timeoutMs} ms) al acceder a la carpeta de cola. Compruebe red, UNC AD_QUEUE_UNC y permisos SMB.`
+      );
+      err.code = 'ETIMEOUT';
+      reject(err);
+    }, timeoutMs);
+  });
+
+  try {
+    await Promise.race([probe(), timeoutPromise]);
     return {
       ok: true,
       uncPath,
       message: 'Se pudo escribir y eliminar un archivo de prueba en la cola SMB.',
     };
   } catch (e) {
+    try {
+      await fs.unlink(targetPath);
+    } catch {
+      /* archivo inexistente o aún bloqueado */
+    }
     const code = e?.code || 'UNKNOWN';
     const mapped = mapWriteError(e);
     const message =
@@ -101,6 +132,8 @@ export async function testAdQueueUncWrite() {
       uncPath,
       message,
     };
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
   }
 }
 

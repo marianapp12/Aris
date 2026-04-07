@@ -1,41 +1,13 @@
 import XLSX from 'xlsx';
+import { isValidOperationalSede } from '../config/operationalSede.js';
+import {
+  normalizeExcelHeaderKey,
+  cellToTrimmedString,
+  excelDuplicateApellidoColumnTarget,
+} from './excelAdministrativeBulkParse.js';
 
-/** Normaliza encabezados: trim, minúsculas, sin tildes, sin espacios ni guiones bajos. */
-export function normalizeExcelHeaderKey(k) {
-  return String(k ?? '')
-    .trim()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[\s_]+/g, '');
-}
-
-/**
- * SheetJS renombra columnas duplicadas: segunda columna "Apellido" → "Apellido_1".
- * Eso se normaliza a "apellido1", que antes se mapeaba a primer apellido y sobrescribía el paterno.
- * @param {string} rawKey encabezado tal como viene del libro
- * @returns {'segundoApellido' | null}
- */
-export function excelDuplicateApellidoColumnTarget(rawKey) {
-  const rk = String(rawKey ?? '').trim();
-  if (/^Apellido_1$/i.test(rk)) return 'segundoApellido';
-  if (/^Apellidos_1$/i.test(rk)) return 'segundoApellido';
-  return null;
-}
-
-/** Evita notación científica y conserva enteros legibles desde Excel. */
-export function cellToTrimmedString(v) {
-  if (v == null || v === '') return '';
-  if (typeof v === 'number') {
-    if (!Number.isFinite(v)) return '';
-    if (Number.isInteger(v) && Math.abs(v) < 1e15) return String(v);
-    return String(v);
-  }
-  return String(v).trim();
-}
-
-/** Mapeo sinónimos comunes → clave interna */
-const HEADER_SYNONYMS = {
+/** Sinónimos de encabezado → campo interno (tras normalizar clave: sin tildes, sin espacios). */
+const OPERATIONAL_HEADER_SYNONYMS = {
   primernombre: 'primerNombre',
   nombre: 'primerNombre',
   segundonombre: 'segundoNombre',
@@ -43,7 +15,7 @@ const HEADER_SYNONYMS = {
   apellidopaterno: 'primerApellido',
   apellidodelpadre: 'primerApellido',
   apellido: 'primerApellido',
-  /** "Apellido 1" humano; no usar para Apellido_1 de SheetJS (véase excelDuplicateApellidoColumnTarget). */
+  /** "Apellido 1"; la 2ª columna duplicada "Apellido" en Excel es Apellido_1 → segundo (excelDuplicateApellidoColumnTarget). */
   apellido1: 'primerApellido',
   segundoapellido: 'segundoApellido',
   apellidomaterno: 'segundoApellido',
@@ -56,19 +28,15 @@ const HEADER_SYNONYMS = {
   departamento: 'departamento',
   depto: 'departamento',
   area: 'departamento',
-  cedula: 'cedula',
-  numerocedula: 'cedula',
-  documento: 'cedula',
-  employeeid: 'cedula',
-  idempleado: 'cedula',
-  ciudad: 'ciudad',
-  city: 'ciudad',
+  sede: 'sede',
+  ubicacion: 'sede',
+  oficina: 'sede',
 };
 
 /**
- * Convierte una fila cruda de sheet_to_json en campos esperados por la carga masiva administrativa.
+ * Convierte una fila cruda de sheet_to_json en el shape esperado por createOperationalUsersBulk.
  */
-export function mapRawRowToAdministrativeFields(rawRow) {
+export function mapRawRowToOperationalFields(rawRow) {
   const acc = {
     primerNombre: '',
     segundoNombre: '',
@@ -76,8 +44,7 @@ export function mapRawRowToAdministrativeFields(rawRow) {
     segundoApellido: '',
     puesto: '',
     departamento: '',
-    cedula: '',
-    ciudad: '',
+    sede: '',
   };
 
   if (!rawRow || typeof rawRow !== 'object') {
@@ -88,8 +55,7 @@ export function mapRawRowToAdministrativeFields(rawRow) {
       SegundoApellido: '',
       Puesto: '',
       Departamento: '',
-      Cedula: '',
-      Ciudad: '',
+      Sede: '',
     };
   }
 
@@ -99,7 +65,7 @@ export function mapRawRowToAdministrativeFields(rawRow) {
     if (String(k).startsWith('__EMPTY')) continue;
     const dup = excelDuplicateApellidoColumnTarget(k);
     const nk = normalizeExcelHeaderKey(k);
-    const target = dup || HEADER_SYNONYMS[nk];
+    const target = dup || OPERATIONAL_HEADER_SYNONYMS[nk];
     if (!target) continue;
     const val = cellToTrimmedString(v);
     if (!val) continue;
@@ -123,35 +89,37 @@ export function mapRawRowToAdministrativeFields(rawRow) {
     SegundoApellido: acc.segundoApellido,
     Puesto: acc.puesto,
     Departamento: acc.departamento,
-    Cedula: acc.cedula,
-    Ciudad: acc.ciudad,
+    Sede: acc.sede,
   };
 }
 
-function scoreAdministrativeSample(rawRows) {
+function scoreOperationalSample(rawRows) {
   let score = 0;
   const n = Math.min(8, rawRows.length);
   for (let i = 0; i < n; i++) {
-    const m = mapRawRowToAdministrativeFields(rawRows[i]);
-    if (m.PrimerNombre && m.PrimerApellido && m.Cedula) score += 3;
-    else if (m.PrimerNombre && m.PrimerApellido) score += 1;
+    const m = mapRawRowToOperationalFields(rawRows[i]);
+    const sede = (m.Sede || '').trim();
+    if (m.PrimerNombre && m.PrimerApellido) {
+      score += 1;
+      if (isValidOperationalSede(sede)) score += 3;
+      else if (sede) score += 1;
+    }
   }
   return score;
 }
 
 /**
- * Elige range (fila 0-based donde están los encabezados en SheetJS):
- * - range 1: fila 1 Excel = título ignorado, fila 2 = encabezados, datos desde fila 3 (plantilla documentada)
- * - range 0: fila 1 = encabezados, datos desde fila 2 (muy habitual sin fila de título)
+ * Elige si la fila de encabezados está en la fila 1 o 2 de Excel (misma heurística que administrativos).
+ * @returns {{ rows: Record<string, string>[], firstDataExcelRow: number }}
  */
-export function parseAdministrativeBulkSheet(sheet) {
+export function parseOperationalBulkSheet(sheet) {
   const opts = { raw: false, defval: '' };
 
   const rowsRange1 = XLSX.utils.sheet_to_json(sheet, { ...opts, range: 1 });
   const rowsRange0 = XLSX.utils.sheet_to_json(sheet, { ...opts, range: 0 });
 
-  const score1 = scoreAdministrativeSample(rowsRange1);
-  const score0 = scoreAdministrativeSample(rowsRange0);
+  const score1 = scoreOperationalSample(rowsRange1);
+  const score0 = scoreOperationalSample(rowsRange0);
 
   let rawRows;
   let firstDataExcelRow;
@@ -167,6 +135,6 @@ export function parseAdministrativeBulkSheet(sheet) {
     firstDataExcelRow = 2;
   }
 
-  const rows = rawRows.map((raw) => mapRawRowToAdministrativeFields(raw));
+  const rows = rawRows.map((raw) => mapRawRowToOperationalFields(raw));
   return { rows, firstDataExcelRow };
 }

@@ -366,6 +366,133 @@
   border-color: rgba(245, 158, 11, 0.45);
 }
 
+/* —— Carga masiva Excel (operarios / administrativos) —— */
+.bulk-upload-panel {
+  margin-top: 4px;
+  padding: 16px 18px;
+  border-radius: 12px;
+  border: 1px solid var(--navy-border, rgba(5, 125, 155, 0.22));
+  background: var(--surface-muted, #f0f4f8);
+}
+
+.bulk-upload-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px 16px;
+  align-items: center;
+}
+
+@media (max-width: 560px) {
+  .bulk-upload-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .bulk-upload-toolbar .bulk-upload-template-btn {
+    justify-self: start;
+  }
+}
+
+.bulk-upload-file-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+  min-width: 0;
+}
+
+.field-group .bulk-upload-panel input[type='file'].bulk-upload-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.bulk-upload-pick-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 18px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--gold, #067996);
+  border: 1px solid var(--gold, #067996);
+  background: rgba(255, 255, 255, 0.85);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.bulk-upload-pick-btn:hover {
+  background: var(--gold-dim, rgba(5, 125, 155, 0.14));
+}
+
+.bulk-upload-file-name {
+  flex: 1 1 140px;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text, #122a42);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bulk-upload-file-name.muted {
+  color: var(--text-dim, #6b7d92);
+  font-style: italic;
+}
+
+.bulk-upload-template-btn {
+  margin-top: 0;
+  min-height: 44px;
+  padding: 12px 18px;
+  box-sizing: border-box;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bulk-upload-help {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(18, 42, 66, 0.08);
+}
+
+.bulk-upload-help summary {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: var(--gold, #067996);
+  cursor: pointer;
+  user-select: none;
+  list-style-position: outside;
+}
+
+.bulk-upload-help summary::-webkit-details-marker {
+  color: var(--gold, #067996);
+}
+
+.bulk-upload-help .note {
+  margin-top: 10px;
+  margin-bottom: 0;
+}
+
+.bulk-upload-actions-spacer {
+  margin-top: 18px;
+}
+
+.bulk-upload-actions-spacer .primary-btn {
+  margin-top: 0;
+}
+
 .user-type-tabs {
   display: flex;
   gap: 10px;

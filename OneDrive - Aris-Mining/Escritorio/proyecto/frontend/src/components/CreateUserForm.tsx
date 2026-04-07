@@ -1682,27 +1682,67 @@ const CreateUserForm = () => {
 
           <div className="field-group">
             <label>ARCHIVO DE EXCEL</label>
-            <input
-              type="file"
-              accept=".xlsx,.xls"
-              onChange={handleBulkFileChange}
-            />
-            <p className="note">
-              La plantilla debe tener la fila 1 con el título ARIS MINING y la fila 2 con estos
-              encabezados: PrimerNombre, SegundoNombre, PrimerApellido, SegundoApellido, Puesto,
-              Departamento y una columna llamada <strong>Sede</strong> (se aceptan variantes de
-              mayúsculas). Valores exactos en Sede: {OPERATIONAL_SEDE_OPTIONS.join(', ')}.
-            </p>
+            <div className="bulk-upload-panel">
+              <div className="bulk-upload-toolbar">
+                <div className="bulk-upload-file-row">
+                  <input
+                    id="bulk-operational-file"
+                    className="bulk-upload-sr-only"
+                    type="file"
+                    accept=".xlsx,.xls"
+                    aria-label="Seleccionar archivo Excel de operarios"
+                    onChange={handleBulkFileChange}
+                  />
+                  <label
+                    htmlFor="bulk-operational-file"
+                    className="bulk-upload-pick-btn"
+                  >
+                    Elegir archivo…
+                  </label>
+                  <span
+                    className={`bulk-upload-file-name ${bulkFile ? '' : 'muted'}`}
+                    title={bulkFile?.name ?? undefined}
+                  >
+                    {bulkFile ? bulkFile.name : 'Ningún archivo seleccionado'}
+                  </span>
+                </div>
+                <a
+                  className="secondary-btn bulk-upload-template-btn"
+                  href={`${import.meta.env.BASE_URL}plantilla-operarios.xlsx`}
+                  download="plantilla operarios.xlsx"
+                >
+                  Descargar plantilla
+                </a>
+              </div>
+              <details className="bulk-upload-help">
+                <summary>Instrucciones y formato del Excel</summary>
+                <p className="note">
+                  Use «Descargar plantilla» si aún no tiene el archivo. Puede usar fila de título y
+                  encabezados en la fila siguiente, o encabezados en la fila 1. Se aceptan
+                  encabezados con espacios (p. ej. <strong>Primer Nombre</strong>), sinónimos
+                  (Nombre, Apellido, Apellido paterno / materno, columna <strong>Apellidos</strong> con
+                  «Alzate Penagos», Ubicación → Sede) y mayúsculas distintas. Para el correo
+                  institucional, <strong>primer apellido = paterno</strong> y segundo = materno; si hay
+                  dos columnas llamadas «Apellido», la segunda se toma como segundo apellido. Sede:
+                  valores exactos {OPERATIONAL_SEDE_OPTIONS.join(', ')}. El UPN en M365 prueba primero{' '}
+                  <code>nombre.apellido</code> sin número en orden fijo; si todas están ocupadas, prueba{' '}
+                  <code>.1</code> en cada combinación, luego <code>.2</code> en cada una, etc. (no es la misma regla
+                  que la cola administrativa en Active Directory).
+                </p>
+              </details>
+            </div>
           </div>
 
-          <button
-            type="button"
-            className="primary-btn"
-            disabled={bulkStatus === 'loading'}
-            onClick={handleBulkUpload}
-          >
-            {bulkStatus === 'loading' ? 'Cargando usuarios…' : 'Cargar usuarios desde Excel'}
-          </button>
+          <div className="bulk-upload-actions-spacer">
+            <button
+              type="button"
+              className="primary-btn"
+              disabled={bulkStatus === 'loading'}
+              onClick={handleBulkUpload}
+            >
+              {bulkStatus === 'loading' ? 'Cargando usuarios…' : 'Cargar usuarios desde Excel'}
+            </button>
+          </div>
 
           {bulkMessage && (
             <p className={bulkStatus === 'error' ? 'error-text' : 'note'}>
@@ -1718,32 +1758,68 @@ const CreateUserForm = () => {
 
           <div className="field-group">
             <label>ARCHIVO DE EXCEL</label>
-            <input
-              type="file"
-              accept=".xlsx,.xls"
-              onChange={handleBulkAdminFileChange}
-            />
-            <p className="note">
-              Puede usar fila 1 solo con encabezados y datos desde fila 2, o fila 1 título + fila 2
-              encabezados + datos desde fila 3 (el sistema detecta el formato). Columnas:{' '}
-              PrimerNombre, SegundoNombre, PrimerApellido, SegundoApellido, Puesto, Departamento,{' '}
-              <strong>Cedula</strong> (obligatoria; también acepta Documento o espacios en los
-              nombres de columna) y <strong>Ciudad</strong> (opcional). La cédula debe tener al menos
-              5 caracteres (mejor formato texto en Excel). Cada fila válida genera un archivo{' '}
-              <code>{'pendiente-{uuid}.json'}</code> en la carpeta compartida.
-            </p>
+            <div className="bulk-upload-panel">
+              <div className="bulk-upload-toolbar">
+                <div className="bulk-upload-file-row">
+                  <input
+                    id="bulk-administrative-file"
+                    className="bulk-upload-sr-only"
+                    type="file"
+                    accept=".xlsx,.xls"
+                    aria-label="Seleccionar archivo Excel de administrativos"
+                    onChange={handleBulkAdminFileChange}
+                  />
+                  <label
+                    htmlFor="bulk-administrative-file"
+                    className="bulk-upload-pick-btn"
+                  >
+                    Elegir archivo…
+                  </label>
+                  <span
+                    className={`bulk-upload-file-name ${bulkAdminFile ? '' : 'muted'}`}
+                    title={bulkAdminFile?.name ?? undefined}
+                  >
+                    {bulkAdminFile ? bulkAdminFile.name : 'Ningún archivo seleccionado'}
+                  </span>
+                </div>
+                <a
+                  className="secondary-btn bulk-upload-template-btn"
+                  href={`${import.meta.env.BASE_URL}plantilla-administrativos.xlsx`}
+                  download="plantilla administrativos.xlsx"
+                >
+                  Descargar plantilla
+                </a>
+              </div>
+              <details className="bulk-upload-help">
+                <summary>Instrucciones y formato del Excel</summary>
+                <p className="note">
+                  Use «Descargar plantilla» si aún no tiene el archivo. Puede usar fila 1 solo con
+                  encabezados y datos desde fila 2, o fila 1 título + fila 2 encabezados + datos
+                  desde fila 3 (el sistema detecta el formato).                   Columnas: Primer Nombre /
+                  PrimerNombre, Segundo Nombre, apellidos (paterno / materno o columna{' '}
+                  <strong>Apellidos</strong> «Alzate Penagos»; dos columnas «Apellido» = 1.º y 2.º),
+                  Puesto, Departamento, <strong>Cédula</strong> (obligatoria; también Documento) y{' '}
+                  <strong>Ciudad</strong> (opcional). La cédula: al menos 5 caracteres (mejor formato
+                  texto en Excel). Cada
+                  fila válida genera un archivo <code>{'pendiente-{uuid}.json'}</code> en la carpeta
+                  compartida.
+                </p>
+              </details>
+            </div>
           </div>
 
-          <button
-            type="button"
-            className="primary-btn"
-            disabled={bulkAdminStatus === 'loading'}
-            onClick={handleBulkAdminUpload}
-          >
-            {bulkAdminStatus === 'loading'
-              ? 'Encolando solicitudes…'
-              : 'Cargar usuarios administrativos desde Excel'}
-          </button>
+          <div className="bulk-upload-actions-spacer">
+            <button
+              type="button"
+              className="primary-btn"
+              disabled={bulkAdminStatus === 'loading'}
+              onClick={handleBulkAdminUpload}
+            >
+              {bulkAdminStatus === 'loading'
+                ? 'Encolando solicitudes…'
+                : 'Cargar usuarios administrativos desde Excel'}
+            </button>
+          </div>
 
           {bulkAdminMessage && (
             <p className={bulkAdminStatus === 'error' ? 'error-text' : 'note'}>

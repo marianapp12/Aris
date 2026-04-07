@@ -5,7 +5,9 @@
 
 .NOTAS (alineación con el backend Node)
   Cédula (employeeId): validar en Entra ID, procesados, cola pending y AD antes de crear; eso bloquea duplicados de persona.
-  sAMAccountName/UPN: misma secuencia de candidatos que operativos M365 (Node: iterateLocalPartCandidates + truncado 20);
+  sAMAccountName/UPN: alineado con la variante administrativa/LDAP en Node (iterateLocalPartCandidates + truncado 20:
+  bases sin número (a)–(d); luego oleada numérica escalonada .1, .2, …). Los operativos M365 usan otra regla (mismo .N por vuelta);
+  este script resuelve colisiones en AD con esa secuencia LDAP.
   aquí se resuelve con bucle Get-ADUser hasta encontrar sAM y UPN libres (autoridad final en AD). El JSON puede traer
   samAccountName/userPrincipalName como referencia; el script recalcula la cuenta a partir de nombres/apellidos.
   New-ADUser -Name usa el sAM resuelto (CN único en la OU); DisplayName sigue siendo el nombre completo legible, así dos
@@ -149,27 +151,39 @@ function Get-AdSamLocalPartCandidates {
     $s2 = if ($Surname2) { $Surname2.Trim() } else { '' }
     $parts = @($g -split '\s+' | Where-Object { $_ })
     $primaryGiven = if ($parts.Count -gt 0) { $parts[0] } else { $g }
-    $secondaryGiven = if ($parts.Count -gt 1) { $parts[1] } else { $null }
+    if ($parts.Count -gt 1) {
+        $secondaryGiven = ($parts[1..($parts.Count - 1)] -join ' ').Trim()
+        if ([string]::IsNullOrWhiteSpace($secondaryGiven)) { $secondaryGiven = $null }
+    } else {
+        $secondaryGiven = $null
+    }
 
-    $list = [System.Collections.Generic.List[string]]::new()
+    $bases = [System.Collections.Generic.List[string]]::new()
     $a = Get-AdJoinedLocalPart $primaryGiven $s1
-    if ($a) { $list.Add($a) }
+    if ($a -and -not $bases.Contains($a)) { [void]$bases.Add($a) }
     if ($s2) {
         $b = Get-AdJoinedLocalPart $primaryGiven $s2
-        if ($b) { $list.Add($b) }
+        if ($b -and -not $bases.Contains($b)) { [void]$bases.Add($b) }
     }
     if ($secondaryGiven) {
         $c = Get-AdJoinedLocalPart $secondaryGiven $s1
-        if ($c) { $list.Add($c) }
+        if ($c -and -not $bases.Contains($c)) { [void]$bases.Add($c) }
         if ($s2) {
             $d = Get-AdJoinedLocalPart $secondaryGiven $s2
-            if ($d) { $list.Add($d) }
+            if ($d -and -not $bases.Contains($d)) { [void]$bases.Add($d) }
         }
     }
-    $base = Get-AdJoinedLocalPart $primaryGiven $s1
-    if ($base) {
-        for ($n = 1; $n -lt 100; $n++) {
-            $list.Add("${base}.${n}")
+
+    $k = $bases.Count
+    $list = [System.Collections.Generic.List[string]]::new()
+    if ($k -lt 1) { return $list }
+    foreach ($b in $bases) { $list.Add($b) }
+    $S = 1
+    $maxRounds = 100
+    for ($round = 0; $round -lt $maxRounds; $round++) {
+        for ($i = 0; $i -lt $k; $i++) {
+            $n = $S + $round * $k + $i
+            $list.Add("$($bases[$i]).$n")
         }
     }
     return $list

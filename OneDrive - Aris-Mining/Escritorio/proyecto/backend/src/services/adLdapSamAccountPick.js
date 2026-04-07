@@ -27,7 +27,8 @@ async function isSamAccountNameTakenInLdap(client, searchBase, sam) {
 }
 
 /**
- * Misma secuencia de candidatos que operativos (iterateLocalPartCandidates + truncado 20).
+ * Usuarios administrativos (cola AD): iterateLocalPartCandidates (oleada numérica escalonada, no la variante operativa M365)
+ * + truncado 20.
  * Con AD_LDAP_* configurado, el primer sAM libre en AD; si no, primer candidato (el script PS reintenta).
  *
  * @param {{ givenName: string, surname1: string, surname2?: string, emailDomain: string }} params
