@@ -2,6 +2,8 @@
  * Misma normalización que carga masiva operativa/administrativa: Title Case en nombres, MAYÚSCULAS en puesto/depto.
  */
 
+import { normalizeAdministrativePostalCode } from './administrativeUserValidation.js';
+
 const WHITESPACE_SPLIT = /\s+/;
 
 export function toTitleCaseWords(value) {
@@ -37,6 +39,7 @@ export function normalizeAdministrativeBody(body) {
     jobTitle: String(body.jobTitle || '').trim().toUpperCase(),
     department: String(body.department || '').trim().toUpperCase(),
     employeeId: String(body.employeeId || '').trim(),
+    postalCode: normalizeAdministrativePostalCode(body.postalCode),
     ...(body.city != null && String(body.city).trim() !== ''
       ? { city: String(body.city).trim() }
       : {}),

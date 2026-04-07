@@ -31,6 +31,11 @@ const OPERATIONAL_HEADER_SYNONYMS = {
   sede: 'sede',
   ubicacion: 'sede',
   oficina: 'sede',
+  codigopostal: 'codigoPostal',
+  cp: 'codigoPostal',
+  zip: 'codigoPostal',
+  postal: 'codigoPostal',
+  zipcode: 'codigoPostal',
 };
 
 /**
@@ -45,6 +50,7 @@ export function mapRawRowToOperationalFields(rawRow) {
     puesto: '',
     departamento: '',
     sede: '',
+    codigoPostal: '',
   };
 
   if (!rawRow || typeof rawRow !== 'object') {
@@ -56,6 +62,7 @@ export function mapRawRowToOperationalFields(rawRow) {
       Puesto: '',
       Departamento: '',
       Sede: '',
+      CodigoPostal: '',
     };
   }
 
@@ -90,6 +97,7 @@ export function mapRawRowToOperationalFields(rawRow) {
     Puesto: acc.puesto,
     Departamento: acc.departamento,
     Sede: acc.sede,
+    CodigoPostal: acc.codigoPostal,
   };
 }
 

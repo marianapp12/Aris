@@ -8,8 +8,30 @@ const employeeIdRegex = new RegExp(
 );
 const cityRegex = /^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ0-9\s.,-]{0,60}$/;
 
+/** Alineado con flujo operativo M365 (código postal). */
+export const ADMIN_POSTAL_MIN = 4;
+export const ADMIN_POSTAL_MAX = 10;
+
+const jobDeptAllowedRegex = /^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ0-9\s.,\-/&()+]+$/;
+const hasInvalidCharsForJobOrDept = (value) => {
+  const v = String(value || '').trim();
+  return Boolean(v && !jobDeptAllowedRegex.test(v));
+};
+
+export function normalizeAdministrativePostalCode(raw) {
+  return String(raw ?? '')
+    .replace(/\s/g, '')
+    .trim();
+}
+
+function isValidAdministrativePostalDigits(normalized) {
+  if (!normalized || !/^\d+$/.test(normalized)) return false;
+  const len = normalized.length;
+  return len >= ADMIN_POSTAL_MIN && len <= ADMIN_POSTAL_MAX;
+}
+
 export function validateAdministrativePayload(body) {
-  const { givenName, surname1, surname2, jobTitle, department, employeeId, city } = body;
+  const { givenName, surname1, surname2, jobTitle, department, employeeId, city, postalCode } = body;
 
   if (!givenName || !surname1 || !jobTitle || !department) {
     return {
@@ -37,6 +59,24 @@ export function validateAdministrativePayload(body) {
       status: 400,
       error: 'Validación fallida',
       message: `La cédula / ID debe ser alfanumérica (guiones permitidos), entre ${EMPLOYEE_ID_MIN_LENGTH} y ${EMPLOYEE_ID_MAX_LENGTH} caracteres`,
+    };
+  }
+
+  const postalNorm = normalizeAdministrativePostalCode(postalCode);
+  if (!postalNorm) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Validación fallida',
+      message: 'El código postal (postalCode) es obligatorio',
+    };
+  }
+  if (!isValidAdministrativePostalDigits(postalNorm)) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Validación fallida',
+      message: `Código postal: solo números, entre ${ADMIN_POSTAL_MIN} y ${ADMIN_POSTAL_MAX} dígitos`,
     };
   }
 
@@ -75,6 +115,25 @@ export function validateAdministrativePayload(body) {
       status: 400,
       error: 'Validación fallida',
       message: 'Los nombres y apellidos solo pueden contener letras',
+    };
+  }
+
+  if (hasInvalidCharsForJobOrDept(jobTitle)) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Validación fallida',
+      message:
+        'Puesto: use solo letras, números, espacios y los signos . , - / & ( ) +',
+    };
+  }
+  if (hasInvalidCharsForJobOrDept(department)) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Validación fallida',
+      message:
+        'Departamento: use solo letras, números, espacios y los signos . , - / & ( ) +',
     };
   }
 

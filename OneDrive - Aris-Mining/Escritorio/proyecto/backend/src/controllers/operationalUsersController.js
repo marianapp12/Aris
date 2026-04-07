@@ -31,6 +31,25 @@ const toTitleCase = (value) =>
 const onlyLettersRegex = /[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s-]/;
 const hasInvalidCharsForName = (value) => value && onlyLettersRegex.test(value);
 
+/** Puesto y departamento: letras, números, espacios y signos acotados */
+const jobDeptAllowedRegex = /^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ0-9\s.,\-/&()+]+$/;
+const hasInvalidCharsForJobOrDept = (value) => Boolean(value && !jobDeptAllowedRegex.test(value));
+
+const OPERATIONAL_POSTAL_MIN = 4;
+const OPERATIONAL_POSTAL_MAX = 10;
+
+function normalizeOperationalPostalCode(raw) {
+  return String(raw ?? '')
+    .replace(/\s/g, '')
+    .trim();
+}
+
+function isValidOperationalPostalCodeDigits(normalized) {
+  if (!normalized || !/^\d+$/.test(normalized)) return false;
+  const len = normalized.length;
+  return len >= OPERATIONAL_POSTAL_MIN && len <= OPERATIONAL_POSTAL_MAX;
+}
+
 /**
  * Grupo por sede primero, luego ranuras comunes desde OPERATIONAL_COMMON_GROUP_IDS.
  * Dedupe de Object ID: no repite POST a Graph; el usuario ya quedó miembro en la primera asignación.
@@ -139,13 +158,28 @@ async function processOperationalBulkRow(row, rowNumber, bulkReservedUpnLower) {
   const puesto = (row.Puesto || '').toString().trim();
   const departamento = (row.Departamento || '').toString().trim();
   const sedeRaw = (row.Sede || '').toString().trim();
+  const codigoPostalNorm = normalizeOperationalPostalCode(row.CodigoPostal ?? '');
 
-  if (!primerNombre || !primerApellido || !puesto || !departamento) {
+  if (
+    !primerNombre ||
+    !primerApellido ||
+    !puesto ||
+    !departamento ||
+    !codigoPostalNorm
+  ) {
     return {
       row: rowNumber,
       status: 'error',
       message:
-        'Faltan campos obligatorios (PrimerNombre, PrimerApellido, Puesto, Departamento).',
+        'Faltan campos obligatorios (PrimerNombre, PrimerApellido, Puesto, Departamento, Codigo postal).',
+    };
+  }
+
+  if (!isValidOperationalPostalCodeDigits(codigoPostalNorm)) {
+    return {
+      row: rowNumber,
+      status: 'error',
+      message: `Codigo postal: solo números, entre ${OPERATIONAL_POSTAL_MIN} y ${OPERATIONAL_POSTAL_MAX} dígitos.`,
     };
   }
 
@@ -203,6 +237,23 @@ async function processOperationalBulkRow(row, rowNumber, bulkReservedUpnLower) {
     };
   }
 
+  if (hasInvalidCharsForJobOrDept(puesto)) {
+    return {
+      row: rowNumber,
+      status: 'error',
+      message:
+        'Puesto: use solo letras, números, espacios y los signos . , - / & ( ) +',
+    };
+  }
+  if (hasInvalidCharsForJobOrDept(departamento)) {
+    return {
+      row: rowNumber,
+      status: 'error',
+      message:
+        'Departamento: use solo letras, números, espacios y los signos . , - / & ( ) +',
+    };
+  }
+
   const primerNombreNorm = toTitleCase(primerNombre);
   const segundoNombreNorm = segundoNombre ? toTitleCase(segundoNombre) : '';
   const primerApellidoNorm = toTitleCase(primerApellido);
@@ -219,6 +270,7 @@ async function processOperationalBulkRow(row, rowNumber, bulkReservedUpnLower) {
       surname2: segundoApellidoNorm || undefined,
       jobTitle: puestoNorm,
       department: departamentoNorm,
+      postalCode: codigoPostalNorm,
       bulkReservedUpnLower,
     });
 
@@ -255,13 +307,17 @@ async function processOperationalBulkRow(row, rowNumber, bulkReservedUpnLower) {
  */
 export const createOperationalUser = async (req, res, next) => {
   try {
-    const { givenName, surname1, surname2, jobTitle, department, sede } = req.body;
+    /** Código postal: solo `postalCode` en el body (JSON del front). */
+    const { givenName, surname1, surname2, jobTitle, department, sede, postalCode } = req.body;
+
+    const postalNorm = normalizeOperationalPostalCode(postalCode ?? '');
 
     // Validación de campos obligatorios
-    if (!givenName || !surname1 || !jobTitle || !department) {
+    if (!givenName || !surname1 || !jobTitle || !department || !postalNorm) {
       return res.status(400).json({
         error: 'Campos obligatorios faltantes',
-        message: 'Los campos nombre, primer apellido, puesto y departamento son obligatorios',
+        message:
+          'Los campos nombre, primer apellido, puesto, departamento, sede y código postal (postalCode) son obligatorios',
       });
     }
 
@@ -272,10 +328,22 @@ export const createOperationalUser = async (req, res, next) => {
       });
     }
 
+    if (!isValidOperationalPostalCodeDigits(postalNorm)) {
+      return res.status(400).json({
+        error: 'Validación fallida',
+        message: `Código postal: solo números, entre ${OPERATIONAL_POSTAL_MIN} y ${OPERATIONAL_POSTAL_MAX} dígitos.`,
+      });
+    }
+
     const sedeNorm = String(sede).trim();
+    const givenTrim = givenName.trim();
+    const s1Trim = surname1.trim();
+    const s2Trim = surname2?.trim() || '';
+    const jobTrim = jobTitle.trim();
+    const deptTrim = department.trim();
 
     // Validación de longitud mínima colocar mas
-    if (givenName.trim().length < 3 || surname1.trim().length < 3) {
+    if (givenTrim.length < 3 || s1Trim.length < 3) {
       return res.status(400).json({
         error: 'Validación fallida',
         message: 'El nombre y primer apellido deben tener al menos 3 caracteres',
@@ -285,11 +353,11 @@ export const createOperationalUser = async (req, res, next) => {
     // Validación de longitud máxima
     const maxLength = 50;
     if (
-      givenName.trim().length > maxLength ||
-      surname1.trim().length > maxLength ||
-      (surname2 && surname2.trim().length > maxLength) ||
-      jobTitle.trim().length > maxLength ||
-      department.trim().length > maxLength
+      givenTrim.length > maxLength ||
+      s1Trim.length > maxLength ||
+      (s2Trim && s2Trim.length > maxLength) ||
+      jobTrim.length > maxLength ||
+      deptTrim.length > maxLength
     ) {
       return res.status(400).json({
         error: 'Validación fallida',
@@ -297,13 +365,50 @@ export const createOperationalUser = async (req, res, next) => {
       });
     }
 
+    if (hasInvalidCharsForName(givenTrim)) {
+      return res.status(400).json({
+        error: 'Validación fallida',
+        message: 'Nombre: solo se permiten letras, espacios y guiones.',
+      });
+    }
+    if (hasInvalidCharsForName(s1Trim)) {
+      return res.status(400).json({
+        error: 'Validación fallida',
+        message: 'Primer apellido: solo se permiten letras, espacios y guiones.',
+      });
+    }
+    if (s2Trim && hasInvalidCharsForName(s2Trim)) {
+      return res.status(400).json({
+        error: 'Validación fallida',
+        message: 'Segundo apellido: solo se permiten letras, espacios y guiones.',
+      });
+    }
+    if (hasInvalidCharsForJobOrDept(jobTrim)) {
+      return res.status(400).json({
+        error: 'Validación fallida',
+        message:
+          'Puesto: use solo letras, números, espacios y los signos . , - / & ( ) +',
+      });
+    }
+    if (hasInvalidCharsForJobOrDept(deptTrim)) {
+      return res.status(400).json({
+        error: 'Validación fallida',
+        message:
+          'Departamento: use solo letras, números, espacios y los signos . , - / & ( ) +',
+      });
+    }
+
+    const jobNorm = jobTrim.toUpperCase();
+    const deptNorm = deptTrim.toUpperCase();
+
     // Crear usuario en Microsoft 365
     const result = await createUserInMicrosoft365({
-      givenName: givenName.trim(),
-      surname1: surname1.trim(),
-      surname2: surname2?.trim(),
-      jobTitle: jobTitle.trim(),
-      department: department.trim(),
+      givenName: givenTrim,
+      surname1: s1Trim,
+      surname2: s2Trim || undefined,
+      jobTitle: jobNorm,
+      department: deptNorm,
+      postalCode: postalNorm,
     });
 
     const groupMemberships = await applyOperationalGroupMemberships(sedeNorm, result.id);
@@ -404,6 +509,7 @@ export const getNextUsername = async (req, res) => {
  *  - Fila 1: título (opcional) — si existe, fila 2 = encabezados y datos desde fila 3
  *  - Sin fila de título: fila 1 = encabezados, datos desde fila 2
  * Encabezados: acepta "Primer Nombre", "PrimerNombre", sinónimos (Nombre→primer nombre, etc.) y Sede/Ubicación.
+ * Código postal: columna obligatoria; encabezados reconocidos ej. "Codigo postal", "Código postal", "CP", "ZIP" (ver excelOperationalBulkParse).
  * Valores de Sede: OPERATIONAL_SEDE_VALUES (operationalSede.js).
  * Concurrencia: OPERATIONAL_BULK_CONCURRENCY (1–20, por defecto 3).
  */

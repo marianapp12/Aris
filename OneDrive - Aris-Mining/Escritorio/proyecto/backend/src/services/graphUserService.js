@@ -81,6 +81,7 @@ async function createUserInMicrosoft365Serialized({
   surname2,
   jobTitle,
   department,
+  postalCode,
   bulkReservedUpnLower,
 }) {
   const graphClient = getGraphClient();
@@ -114,6 +115,7 @@ async function createUserInMicrosoft365Serialized({
       },
       jobTitle: jobTitle,
       department: department,
+      ...(postalCode ? { postalCode } : {}),
     };
 
     try {

@@ -5,6 +5,7 @@
 
 .NOTAS (alineación con el backend Node)
   Cédula (employeeId): validar en Entra ID, procesados, cola pending y AD antes de crear; eso bloquea duplicados de persona.
+  pendiente-*.json puede incluir postalCode (obligatorio en backend): se aplica en AD como PostalCode (Set-ADUser).
   sAMAccountName/UPN: alineado con la variante administrativa/LDAP en Node (iterateLocalPartCandidates + truncado 20:
   bases sin número (a)–(d); luego oleada numérica escalonada .1, .2, …). Los operativos M365 usan otra regla (mismo .N por vuelta);
   este script resuelve colisiones en AD con esa secuencia LDAP.
@@ -388,6 +389,9 @@ foreach ($f in $files) {
             if ($item.cargo)        { $uParams['Title']       = [string]$item.cargo }
             if ($item.departamento) { $uParams['Department']  = [string]$item.departamento }
             if ($item.city)         { $uParams['City']        = [string]$item.city }
+            if ($item.postalCode -and $item.postalCode.ToString().Trim()) {
+                $uParams['PostalCode'] = [string]$item.postalCode.ToString().Trim()
+            }
             Set-ADUser @uParams
             $upnFinal = [string]$adUser.UserPrincipalName
             $mailFinal = [string]$adUser.EmailAddress
@@ -503,7 +507,10 @@ foreach ($f in $files) {
         if ($item.cargo)        { Set-ADUser -Identity $sam -Title       ([string]$item.cargo) }
         if ($item.departamento) { Set-ADUser -Identity $sam -Department  ([string]$item.departamento) }
         if ($item.employeeId)   { Set-ADUser -Identity $sam -EmployeeID   ([string]$item.employeeId) }
-        if ($item.city)         { Set-ADUser -Identity $sam -City         ([string]$item.city) }
+        if ($item.city)         { Set-ADUser -Identity $sam -City       ([string]$item.city) }
+        if ($item.postalCode -and $item.postalCode.ToString().Trim()) {
+            Set-ADUser -Identity $sam -PostalCode ([string]$item.postalCode.ToString().Trim())
+        }
 
         Write-AdQueueProcessedUserFile -ProcessedDir $processedDir -EmployeeId $empId `
             -NombreCompleto $displayName -RequestId $requestId -SamAccountName $sam

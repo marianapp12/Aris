@@ -16,6 +16,7 @@ import { pickFirstAvailableSamAndUpnForAdQueue } from './adLdapSamAccountPick.js
 import { assertEmployeeIdNotTakenInActiveDirectoryLdap } from './adLdapEmployeeIdPrecheck.js';
 import { assertNoPendingQueueFileWithEmployeeId } from './adQueuePendingEmployeeIdScan.js';
 import { assertEmployeeIdNotInProcessedRecords } from './adQueueProcessedEmployeeIdScan.js';
+import { normalizeAdministrativePostalCode } from '../utils/administrativeUserValidation.js';
 
 function joinQueuePath(queueUnc, fileName) {
   const normalized = queueUnc.replace(/[/\\]+$/g, '');
@@ -167,6 +168,7 @@ export async function enqueueAdUserUpdateByEmployeeIdRequest(body, graphHint = {
     cargo: body.jobTitle.trim(),
     departamento: body.department.trim(),
     city: body.city?.trim() || undefined,
+    postalCode: normalizeAdministrativePostalCode(body.postalCode),
   };
 
   const targetPath = joinQueuePath(config.uncPath, `pendiente-${requestId}.json`);
@@ -281,6 +283,7 @@ export async function enqueueAdUserRequest(body) {
     ...(config.company ? { empresa: config.company } : {}),
     employeeId,
     city: body.city?.trim() || undefined,
+    postalCode: normalizeAdministrativePostalCode(body.postalCode),
   };
 
   const meta = {};

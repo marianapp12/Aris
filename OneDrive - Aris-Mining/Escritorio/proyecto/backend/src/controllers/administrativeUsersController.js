@@ -1,6 +1,9 @@
 import fs from 'fs/promises';
 import XLSX from 'xlsx';
-import { validateAdministrativePayload } from '../utils/administrativeUserValidation.js';
+import {
+  validateAdministrativePayload,
+  normalizeAdministrativePostalCode,
+} from '../utils/administrativeUserValidation.js';
 import { normalizeAdministrativeBody } from '../utils/administrativeUserNormalization.js';
 import {
   getAdQueueConfig,
@@ -189,9 +192,9 @@ export const getNextAdministrativeUsername = async (req, res) => {
 
 /**
  * POST /api/users/administrative/bulk
- * Carga masiva: misma plantilla que operativos + Cedula (obligatoria) y Ciudad (opcional).
+ * Carga masiva: misma plantilla que operativos + Cedula (obligatoria), Codigo postal (obligatorio) y Ciudad (opcional).
  * Soporta (1) fila 1 título + fila 2 encabezados + datos desde fila 3, o (2) fila 1 encabezados + datos desde fila 2.
- * Encabezados admiten variantes (espacios, mayúsculas, tildes; sinónimos como Documento → cédula).
+ * Encabezados admiten variantes (espacios, mayúsculas, tildes; sinónimos como Documento → cédula, CP/ZIP → código postal).
  */
 export const createAdministrativeUsersBulk = async (req, res) => {
   try {
@@ -237,13 +240,21 @@ export const createAdministrativeUsersBulk = async (req, res) => {
       const departamento = (row.Departamento || '').toString().trim();
       const cedulaRaw = (row.Cedula || '').toString().trim();
       const ciudad = (row.Ciudad || '').toString().trim();
+      const codigoPostalRaw = (row.CodigoPostal ?? '').toString();
 
-      if (!primerNombre || !primerApellido || !puesto || !departamento || !cedulaRaw) {
+      if (
+        !primerNombre ||
+        !primerApellido ||
+        !puesto ||
+        !departamento ||
+        !cedulaRaw ||
+        !normalizeAdministrativePostalCode(codigoPostalRaw)
+      ) {
         results.push({
           row: rowNumber,
           status: 'error',
           message:
-            'Faltan campos obligatorios (PrimerNombre, PrimerApellido, Puesto, Departamento, Cedula).',
+            'Faltan campos obligatorios (PrimerNombre, PrimerApellido, Puesto, Departamento, Cedula, Codigo postal).',
         });
         continue;
       }
@@ -317,6 +328,7 @@ export const createAdministrativeUsersBulk = async (req, res) => {
         jobTitle: puestoNorm,
         department: departamentoNorm,
         employeeId,
+        postalCode: codigoPostalRaw,
         ...(ciudad ? { city: ciudad } : {}),
       };
 
@@ -331,7 +343,8 @@ export const createAdministrativeUsersBulk = async (req, res) => {
       }
 
       try {
-        const created = await enqueueAdUserRequest(body);
+        const normalized = normalizeAdministrativeBody(body);
+        const created = await enqueueAdUserRequest(normalized);
         results.push({
           row: rowNumber,
           status: 'success',

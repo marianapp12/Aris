@@ -63,6 +63,11 @@ const HEADER_SYNONYMS = {
   idempleado: 'cedula',
   ciudad: 'ciudad',
   city: 'ciudad',
+  codigopostal: 'codigoPostal',
+  cp: 'codigoPostal',
+  zip: 'codigoPostal',
+  postal: 'codigoPostal',
+  zipcode: 'codigoPostal',
 };
 
 /**
@@ -78,6 +83,7 @@ export function mapRawRowToAdministrativeFields(rawRow) {
     departamento: '',
     cedula: '',
     ciudad: '',
+    codigoPostal: '',
   };
 
   if (!rawRow || typeof rawRow !== 'object') {
@@ -90,6 +96,7 @@ export function mapRawRowToAdministrativeFields(rawRow) {
       Departamento: '',
       Cedula: '',
       Ciudad: '',
+      CodigoPostal: '',
     };
   }
 
@@ -125,6 +132,7 @@ export function mapRawRowToAdministrativeFields(rawRow) {
     Departamento: acc.departamento,
     Cedula: acc.cedula,
     Ciudad: acc.ciudad,
+    CodigoPostal: acc.codigoPostal,
   };
 }
 
