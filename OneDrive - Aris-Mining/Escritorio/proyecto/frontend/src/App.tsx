@@ -101,8 +101,11 @@ const App: React.FC = () => {
                 {authzError || 'Access restricted to authorized personnel.'}
               </p>
               <button
+                type="button"
                 className="btn-secondary"
-                onClick={() => instance.logoutPopup()}
+                onClick={() => {
+                  void instance.logoutRedirect();
+                }}
               >
                 Cerrar sesión
               </button>
@@ -133,8 +136,11 @@ const App: React.FC = () => {
           </div>
 
           <button
+            type="button"
             className="btn-secondary"
-            onClick={() => instance.logoutPopup()}
+            onClick={() => {
+              void instance.logoutRedirect();
+            }}
             style={{ marginLeft: 12 }}
           >
             Salir

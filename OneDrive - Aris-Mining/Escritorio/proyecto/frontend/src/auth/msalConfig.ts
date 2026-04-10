@@ -22,6 +22,8 @@ export const msalConfig: Configuration = {
     clientId: azureClientId,
     authority: `https://login.microsoftonline.com/${azureTenantId}`,
     redirectUri: window.location.origin,
+    /** Tras cerrar sesión (logoutRedirect), Microsoft redirige aquí — misma URL que en registro SPA. */
+    postLogoutRedirectUri: window.location.origin,
   },
   cache: {
     cacheLocation: 'sessionStorage',
