@@ -31,9 +31,8 @@ const toTitleCase = (value) =>
 const onlyLettersRegex = /[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s-]/;
 const hasInvalidCharsForName = (value) => value && onlyLettersRegex.test(value);
 
-/** Puesto y departamento: letras, números, espacios y signos acotados */
-const jobDeptAllowedRegex = /^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ0-9\s.,\-/&()+]+$/;
-const hasInvalidCharsForJobOrDept = (value) => Boolean(value && !jobDeptAllowedRegex.test(value));
+/** Puesto y departamento: mismas reglas que nombres (solo letras, espacios, guiones). */
+const hasInvalidCharsForJobOrDept = (value) => Boolean(value && onlyLettersRegex.test(value));
 
 const OPERATIONAL_POSTAL_MIN = 4;
 const OPERATIONAL_POSTAL_MAX = 10;
@@ -241,16 +240,14 @@ async function processOperationalBulkRow(row, rowNumber, bulkReservedUpnLower) {
     return {
       row: rowNumber,
       status: 'error',
-      message:
-        'Puesto: use solo letras, números, espacios y los signos . , - / & ( ) +',
+      message: 'Puesto: solo letras, espacios y guiones.',
     };
   }
   if (hasInvalidCharsForJobOrDept(departamento)) {
     return {
       row: rowNumber,
       status: 'error',
-      message:
-        'Departamento: use solo letras, números, espacios y los signos . , - / & ( ) +',
+      message: 'Departamento: solo letras, espacios y guiones.',
     };
   }
 
@@ -386,15 +383,13 @@ export const createOperationalUser = async (req, res, next) => {
     if (hasInvalidCharsForJobOrDept(jobTrim)) {
       return res.status(400).json({
         error: 'Validación fallida',
-        message:
-          'Puesto: use solo letras, números, espacios y los signos . , - / & ( ) +',
+        message: 'Puesto: solo letras, espacios y guiones.',
       });
     }
     if (hasInvalidCharsForJobOrDept(deptTrim)) {
       return res.status(400).json({
         error: 'Validación fallida',
-        message:
-          'Departamento: use solo letras, números, espacios y los signos . , - / & ( ) +',
+        message: 'Departamento: solo letras, espacios y guiones.',
       });
     }
 

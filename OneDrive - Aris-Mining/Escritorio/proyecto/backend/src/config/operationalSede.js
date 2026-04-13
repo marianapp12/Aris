@@ -39,11 +39,7 @@ export function getGroupObjectIdForSede(sede) {
     { sede: 'Segovia', envVar: 'GROUP_SEGOVIA_ID', raw: process.env.GROUP_SEGOVIA_ID },
     { sede: 'Marmato', envVar: 'GROUP_MARMATO_ID', raw: process.env.GROUP_MARMATO_ID },
     { sede: 'Bogotá', envVar: 'GROUP_BOGOTA_ID', raw: process.env.GROUP_BOGOTA_ID },
-    {
-      sede: 'Bucaramanga',
-      envVar: 'GROUP_BUCARAMANGA_ID',
-      raw: process.env.GROUP_BUCARAMANGA_ID,
-    },
+    { sede: 'Bucaramanga', envVar: 'GROUP_BUCARAMANGA_ID', raw: process.env.GROUP_BUCARAMANGA_ID },
   ];
   const row = rows.find((r) => r.sede === t);
   if (!row) {

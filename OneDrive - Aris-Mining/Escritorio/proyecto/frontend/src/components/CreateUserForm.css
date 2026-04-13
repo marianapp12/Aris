@@ -78,6 +78,35 @@
   gap: 20px;
 }
 
+@media (max-width: 640px) {
+  .two-col {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .dark-section {
+    padding: 20px 16px;
+  }
+
+  .dark-form {
+    gap: 20px;
+  }
+
+  .success-card {
+    padding: 24px 16px;
+  }
+
+  .success-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    padding: 12px 14px;
+  }
+
+  .success-value {
+    text-align: left;
+  }
+}
+
 .preview-box {
   background: var(--surface-muted, #f0f4f8);
   border: 1px solid var(--navy-border, rgba(5, 125, 155, 0.22));

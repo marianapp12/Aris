@@ -12,11 +12,8 @@ const cityRegex = /^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ0-9\s.,-]{0,60}$/;
 export const ADMIN_POSTAL_MIN = 4;
 export const ADMIN_POSTAL_MAX = 10;
 
-const jobDeptAllowedRegex = /^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ0-9\s.,\-/&()+]+$/;
-const hasInvalidCharsForJobOrDept = (value) => {
-  const v = String(value || '').trim();
-  return Boolean(v && !jobDeptAllowedRegex.test(v));
-};
+/** Puesto y departamento: mismas reglas que nombres (solo letras, espacios, guiones). */
+const hasInvalidCharsForJobOrDept = (value) => hasInvalidCharsForName(value);
 
 export function normalizeAdministrativePostalCode(raw) {
   return String(raw ?? '')
@@ -123,8 +120,7 @@ export function validateAdministrativePayload(body) {
       ok: false,
       status: 400,
       error: 'Validación fallida',
-      message:
-        'Puesto: use solo letras, números, espacios y los signos . , - / & ( ) +',
+      message: 'Puesto: solo letras, espacios y guiones.',
     };
   }
   if (hasInvalidCharsForJobOrDept(department)) {
@@ -132,8 +128,7 @@ export function validateAdministrativePayload(body) {
       ok: false,
       status: 400,
       error: 'Validación fallida',
-      message:
-        'Departamento: use solo letras, números, espacios y los signos . , - / & ( ) +',
+      message: 'Departamento: solo letras, espacios y guiones.',
     };
   }
 

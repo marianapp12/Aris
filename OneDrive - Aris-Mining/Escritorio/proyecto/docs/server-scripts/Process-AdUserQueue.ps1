@@ -31,6 +31,8 @@
 .EJEMPLO procesado-employeeId-123456.json
   {"cedula":"1234567890","nombreCompleto":"Juan Pérez","fechaCreacion":"2026-04-01T12:00:00.000Z","estado":"creado_en_ad","requestId":"...","samAccountName":"jperez"}
 #>
+# Parámetros: QueuePath = carpeta con pendiente-*.json; ScriptsRoot = raíz de hermanas (si vacío, padre de QueuePath);
+# *Subfolder = nombres relativos bajo ScriptsRoot; OrganizationalUnit = OU por defecto; DefaultCompany = compañía si no viene en el JSON.
 param(
     [string]$QueuePath          = 'C:\scripts\pending',
     [string]$ScriptsRoot        = '',
@@ -41,15 +43,20 @@ param(
     [string]$DefaultCompany     = ''
 )
 
+# Flujo resumido: lee pendiente-*.json en QueuePath → crea/actualiza usuario en AD → escribe resultados y procesados
+# → borra o mueve el JSON. Los errores generan resultado-*.json (status error) y mueven el archivo a la carpeta error.
+
 Import-Module ActiveDirectory
 $ErrorActionPreference = 'Stop'
 
+# Mensaje con marca de tiempo en consola (tareas programadas / depuración).
 function Write-QueueLog {
     param([string]$Message, [string]$Level = 'INFO')
     $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     Write-Host "[$ts] [$Level] $Message"
 }
 
+# Raíz donde viven carpetas hermanas (pending, procesados, resultados, error). Si ScriptsRoot viene vacío, se infiere del padre de QueuePath.
 function Resolve-AdQueueScriptsRoot {
     param(
         [string]$ScriptsRootParam,
@@ -70,18 +77,21 @@ function Resolve-AdQueueScriptsRoot {
     return $parent.TrimEnd('\')
 }
 
+# Sanitiza la cédula para usarla en el nombre del archivo procesado-employeeId-*.json (evita caracteres raros en rutas).
 function Get-SafeEmployeeIdFileSuffix {
     param([string]$EmployeeId)
     if ($null -eq $EmployeeId) { return '' }
     return ($EmployeeId.Trim() -replace '[^a-zA-Z0-9_-]', '_')
 }
 
+# Ruta completa del JSON de “ya procesado por cédula” (el backend también puede leer esta carpeta).
 function Get-AdQueueProcessedRecordFilePath {
     param([string]$ProcessedDir, [string]$EmployeeId)
     $safe = Get-SafeEmployeeIdFileSuffix $EmployeeId
     return (Join-Path $ProcessedDir "procesado-employeeId-$safe.json")
 }
 
+# Evita doble alta: si ya existe procesado-employeeId-*.json para esa cédula, no se crea de nuevo en AD.
 function Assert-NoProcessedRecordForEmployeeId {
     param([string]$ProcessedDir, [string]$EmployeeId)
     if ([string]::IsNullOrWhiteSpace($EmployeeId)) { return }
@@ -91,10 +101,12 @@ function Assert-NoProcessedRecordForEmployeeId {
     }
 }
 
+# Contraseña inicial fija del script (debe alinearse con políticas de AD); el usuario cambia al primer inicio si ChangePasswordAtLogon.
 function New-AdSafePassword {
     return ConvertTo-SecureString "Aris1234*" -AsPlainText -Force
 }
 
+# Escapa comodines y comillas para usar valores en -Filter de Get-ADUser (LDAP) sin inyección ni coincidencias accidentales.
 function Escape-AdFilterValue {
     param([string]$Value)
     if ($null -eq $Value) { return '' }
@@ -102,6 +114,7 @@ function Escape-AdFilterValue {
 }
 
 # ── Generación de sAM (misma lógica que backend/src/utils/adUsernameHelpers.js) ──
+# Quita tildes/diacríticos y deja solo letras minúsculas y números para construir la parte local del logon.
 function Normalize-AdNameChunk {
     param([string]$Name)
     if ([string]::IsNullOrWhiteSpace($Name)) { return '' }
@@ -115,6 +128,7 @@ function Normalize-AdNameChunk {
     return ($normalized -creplace '[^a-z0-9]', '')
 }
 
+# Parte local del UPN tipo "nombre.apellido" a partir de trozos ya normalizados (sin espacios).
 function Get-AdJoinedLocalPart {
     param([string]$Given, [string]$Surname)
     $g = Normalize-AdNameChunk $Given
@@ -123,6 +137,7 @@ function Get-AdJoinedLocalPart {
     return "$g.$s"
 }
 
+# Recorta la parte local a 20 caracteres (límite clásico de sAMAccountName), respetando sufijos numéricos .N si los hay.
 function Truncate-AdSamLocalPart {
     param([string]$LocalPart)
     $max = 20
@@ -141,6 +156,7 @@ function Truncate-AdSamLocalPart {
     return $LocalPart.Substring(0, $max)
 }
 
+# Lista ordenada de candidatos (nombre.apellido, variantes con segundo nombre/apellido, luego .1, .2, … por “rondas”) como en Node.
 function Get-AdSamLocalPartCandidates {
     param(
         [string]$GivenNameFull,
@@ -190,6 +206,7 @@ function Get-AdSamLocalPartCandidates {
     return $list
 }
 
+# Extrae el GUID/id del nombre pendiente-{id}.json si el JSON no trae requestId.
 function Get-RequestIdFromPendienteFile {
     param([string]$FileName)
     if ($FileName -match '^pendiente-(.+)\.json$') { return $Matches[1].Trim() }
@@ -204,6 +221,7 @@ function Get-RequestIdFromPendienteFile {
   - samAccountName / userPrincipalName / email: valores finales en AD tras crear o actualizar
     (el JSON pendiente puede traer otra propuesta; el script resuelve colisiones de sAM/UPN)
 #>
+# Escribe un JSON por requestId para que el backend/front consulten el estado del job (éxito o error).
 function Write-AdQueueResultFile {
     param(
         [string]$ResultsDir,
@@ -250,6 +268,7 @@ function Write-AdQueueResultFile {
   Registro por cédula tras alta en AD (backend Node lee esta carpeta).
   Archivo: procesado-employeeId-{cedula_sanitizada}.json — UTF-8 sin BOM.
 #>
+# Marca en disco que esta cédula ya tuvo alta exitosa (anti-duplicados en la siguiente ejecución).
 function Write-AdQueueProcessedUserFile {
     param(
         [string]$ProcessedDir,
@@ -288,6 +307,7 @@ function Write-AdQueueProcessedUserFile {
 }
 
 # ── Resolver raíz y carpetas hermanas ─────────────────────────────────────────
+# error / procesados / resultados quedan al mismo nivel (hermanas de la carpeta que contiene pending), salvo que cambie ScriptsRoot.
 $scriptsRootResolved = Resolve-AdQueueScriptsRoot -ScriptsRootParam $ScriptsRoot -QueuePathPending $QueuePath
 if ([string]::IsNullOrWhiteSpace($scriptsRootResolved)) {
     Write-QueueLog "No se pudo resolver la raíz de scripts (ScriptsRoot vacío y QueuePath sin directorio padre): '$QueuePath'" "ERROR"
@@ -305,6 +325,7 @@ if (-not (Test-Path -LiteralPath $QueuePath)) {
     exit 1
 }
 
+# Crea las carpetas de salida si no existen (crítico: sin ellas no se pueden archivar resultados ni errores).
 foreach ($dirSpec in @(
         @{ Path = $errDir;       Label = 'error';       Critical = $true },
         @{ Path = $processedDir; Label = 'procesados'; Critical = $true },
@@ -322,6 +343,7 @@ foreach ($dirSpec in @(
 }
 
 # ── Procesar archivos ─────────────────────────────────────────────────────────
+# Solo archivos que coincidan con el patrón del backend al encolar (pendiente-{requestId}.json).
 $files = @(Get-ChildItem -LiteralPath $QueuePath -Filter 'pendiente-*.json' -File -ErrorAction SilentlyContinue)
 
 if ($files.Count -eq 0) {
@@ -335,6 +357,7 @@ foreach ($f in $files) {
     $requestId = $null
 
     try {
+        # Cada archivo es un único objeto JSON (campos en español alineados con el backend de cola AD).
         $item = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
 
         if ($item.requestId -and $item.requestId.ToString().Trim()) {
@@ -343,6 +366,7 @@ foreach ($f in $files) {
             $requestId = Get-RequestIdFromPendienteFile -FileName $f.Name
         }
 
+        # create = alta nueva; updateByEmployeeId = ajustar datos de un usuario ya existente (misma cédula en AD).
         $queueAction = if ($item.queueAction) { [string]$item.queueAction } else { 'create' }
 
         if (-not $item.primerNombre)      { throw "Falta campo 'primerNombre'" }
@@ -351,6 +375,7 @@ foreach ($f in $files) {
             throw "Falta campo 'employeeId' (cédula / ID)"
         }
 
+        # GivenName / Surname en AD: se arman desde los campos del JSON (pueden incluir segundo nombre o apellido).
         $givenParts = @($item.primerNombre.Trim())
         if ($item.segundoNombre -and $item.segundoNombre.ToString().Trim()) {
             $givenParts += $item.segundoNombre.ToString().Trim()
@@ -373,6 +398,7 @@ foreach ($f in $files) {
         $empIdEsc = Escape-AdFilterValue $empId
 
         if ($queueAction -eq 'updateByEmployeeId') {
+            # No crea cuenta: localiza por EmployeeID (cédula), actualiza nombres/atributos y responde con sAM/UPN/correo actuales.
             # -Properties: necesarios para devolver UPN/correo reales en resultado-{id}.json (misma info que ve el usuario en AD)
             $adUser = Get-ADUser -Filter "EmployeeID -eq '$empIdEsc'" -Properties SamAccountName, UserPrincipalName, EmailAddress -ErrorAction SilentlyContinue
             if (-not $adUser) {
@@ -408,10 +434,11 @@ foreach ($f in $files) {
 
         if (-not $item.userPrincipalName) { throw "Falta campo 'userPrincipalName' (se usa el dominio para construir el UPN final)" }
 
+        # ── Rama create: nueva cuenta en AD ─────────────────────────────────────
         # 1) Registro local procesados (cédula) — antes de tocar AD
         Assert-NoProcessedRecordForEmployeeId -ProcessedDir $processedDir -EmployeeId $empId
 
-        # 2) Active Directory por cédula (EmployeeID)
+        # 2) Comprobar que no exista ya un objeto AD con esa misma cédula (EmployeeID).
         $idDup = Get-ADUser -Filter "EmployeeID -eq '$empIdEsc'" -ErrorAction SilentlyContinue
         if ($idDup) {
             throw "Ya existe un usuario en Active Directory con la misma cédula / EmployeeID: $empId"
@@ -419,6 +446,7 @@ foreach ($f in $files) {
 
         $upnRaw = $item.userPrincipalName.ToString().Trim()
         if ($upnRaw -notmatch '@') { throw "UPN inválido: '$upnRaw'" }
+        # El dominio del UPN final se toma del JSON; la parte local se recalcula en AD hasta encontrar par sAM+UPN libres.
         $upnDomain = ($upnRaw -split '@', 2)[1].ToLowerInvariant()
 
         $paOnly = $item.primerApellido.Trim()
@@ -426,6 +454,7 @@ foreach ($f in $files) {
         $candList = Get-AdSamLocalPartCandidates -GivenNameFull $givenName -Surname1 $paOnly -Surname2 $saOpt
         $samResolved = $null
         $upn = $null
+        # Primer candidato libre en AD gana (sAM único y UPN único); si todos están ocupados, se lanza error claro.
         foreach ($raw in $candList) {
             if ([string]::IsNullOrWhiteSpace($raw)) { continue }
             $trySam = (Truncate-AdSamLocalPart $raw).ToLowerInvariant()
@@ -447,6 +476,7 @@ foreach ($f in $files) {
         }
         $sam = $samResolved
 
+        # OU por parámetro del script o override en queueMetadata.ouDn desde el backend.
         $ou = $OrganizationalUnit
         if ($item.queueMetadata -and $item.queueMetadata.ouDn) {
             $ou = [string]$item.queueMetadata.ouDn
@@ -459,6 +489,7 @@ foreach ($f in $files) {
         }
 
         $upnHintLower = $upnRaw.ToLowerInvariant()
+        # EmailAddress en AD: si el JSON trae el mismo valor que el UPN propuesto, se usa el UPN ya resuelto (evita desalinear tras colisión de sAM).
         if ($item.email -and $item.email.ToString().Trim()) {
             $mailHint = $item.email.ToString().Trim().ToLowerInvariant()
             if ($mailHint -eq $upnHintLower) {
@@ -470,6 +501,7 @@ foreach ($f in $files) {
             $mail = $upn
         }
 
+        # Company: varias claves posibles en el JSON + valor por defecto del parámetro -DefaultCompany.
         $company = $null
         if ($item.empresa -and $item.empresa.ToString().Trim()) {
             $company = $item.empresa.ToString().Trim()
@@ -504,6 +536,7 @@ foreach ($f in $files) {
 
         New-ADUser @newParams
 
+        # Atributos que New-ADUser no siempre rellena igual en todas las versiones: se aplican en un segundo paso.
         if ($item.cargo)        { Set-ADUser -Identity $sam -Title       ([string]$item.cargo) }
         if ($item.departamento) { Set-ADUser -Identity $sam -Department  ([string]$item.departamento) }
         if ($item.employeeId)   { Set-ADUser -Identity $sam -EmployeeID   ([string]$item.employeeId) }
@@ -528,6 +561,7 @@ foreach ($f in $files) {
         Write-QueueLog "Usuario creado OK: $sam"
 
     } catch {
+        # Fallo: log + resultado error para polling + mover JSON a carpeta error (si el archivo sigue en cola).
         $errorMsg = $_.Exception.Message
         Write-QueueLog "FALLO procesando '$($f.Name)': $errorMsg" "ERROR"
 

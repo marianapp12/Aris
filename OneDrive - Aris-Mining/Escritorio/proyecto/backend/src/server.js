@@ -1,3 +1,6 @@
+/**
+ * Punto de entrada Express: CORS, JSON acotado, montaje de rutas `/api/users/*`, health y limpieza periódica de jobs Graph tras cola AD.
+ */
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -6,28 +9,25 @@ import queueUsersRoutes from './routes/queueUsers.js';
 import administrativeUsersRoutes from './routes/administrativeUsers.js';
 import { startAdQueueProcessedGraphCleanup } from './services/adQueueProcessedGraphCleanup.js';
 
-// Cargar variables de entorno
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Middleware
 app.use(cors());
+/** Límite bajo para evitar payloads enormes en APIs de usuario. */
 app.use(express.json({ limit: '128kb' }));
 
-// Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'Servidor funcionando correctamente' });
 });
 
-// API REST: todos los endpoints de usuarios bajo /api/users (p. ej. POST /api/users/operational).
-// Rutas
+// API REST bajo /api/users (operativo Graph, cola legacy, administrativo UNC).
 app.use('/api/users', operationalUsersRoutes);
 app.use('/api/users', queueUsersRoutes);
 app.use('/api/users', administrativeUsersRoutes);
 
-// Manejo de errores
+/** Middleware de error Express (cuatro argumentos); en desarrollo adjunta stack. */
 app.use((err, req, res, next) => {
   console.error('Error:', err);
   res.status(err.status || 500).json({
@@ -36,9 +36,9 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Iniciar servidor
 app.listen(PORT, () => {
   console.log(`Servidor ejecutándose en http://localhost:${PORT}`);
+  /** Retira usuarios temporales de Graph cuando el job de cola AD terminó con éxito. */
   startAdQueueProcessedGraphCleanup();
 });
 

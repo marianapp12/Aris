@@ -1,3 +1,7 @@
+/**
+ * Raíz de la SPA: flujo MSAL (login) → comprobación de pertenencia a grupo vía Graph → formulario de altas.
+ * Mantiene estados de carga y error de autorización sin romper el orden de hooks (spinner MSAL antes de returns condicionales).
+ */
 import React, { useEffect, useMemo, useState } from 'react';
 import CreateUserForm, { INITIAL_PASSWORD_M365 } from './components/CreateUserForm';
 import './App.css';
@@ -17,8 +21,10 @@ const App: React.FC = () => {
   const [authzLoading, setAuthzLoading] = useState<boolean>(false);
   const [authzError, setAuthzError] = useState<string | null>(null);
 
+  /** MSAL terminó login redirect / silent; hasta entonces se muestra “Loading”. */
   const msalReady = inProgress === InteractionStatus.None;
 
+  /** Tras sesión válida, llama a Graph (`checkMemberGroups`) para limitar la app al grupo configurado. */
   useEffect(() => {
     let cancelled = false;
 
@@ -130,21 +136,22 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          <div className="header-badge">
-            <span className="badge-dot" />
-            Microsoft 365
-          </div>
+          <div className="header-actions">
+            <div className="header-badge">
+              <span className="badge-dot" />
+              Microsoft 365
+            </div>
 
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={() => {
-              void instance.logoutRedirect();
-            }}
-            style={{ marginLeft: 12 }}
-          >
-            Salir
-          </button>
+            <button
+              type="button"
+              className="btn-secondary header-logout-btn"
+              onClick={() => {
+                void instance.logoutRedirect();
+              }}
+            >
+              Salir
+            </button>
+          </div>
         </div>
       </header>
 

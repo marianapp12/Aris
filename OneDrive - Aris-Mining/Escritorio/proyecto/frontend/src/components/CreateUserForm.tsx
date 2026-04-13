@@ -20,6 +20,13 @@ import {
 import { generateUserName, generateDisplayName } from '../utils/userNameGenerator';
 import './CreateUserForm.css';
 
+/**
+ * Formulario de creación de usuarios:
+ * - Operativo: envío al backend → Microsoft Graph (cuenta M365).
+ * - Administrativo: prueba SMB (opcional) → encolado JSON → script PowerShell en el servidor (AD).
+ * Incluye validación en cliente, filtrado de entrada, vista previa, carga masiva Excel y polling del resultado AD.
+ */
+
 const DOMAIN = '@realizandoprueba123hotmail.onmicrosoft.com';
 const AD_UPN_SUFFIX =
   (import.meta.env.VITE_AD_UPN_SUFFIX as string | undefined)?.trim() || 'ad.local';
@@ -31,13 +38,47 @@ const EMPLOYEE_ID_MAX = 32;
 /** Alineado con operationalUsersController (código postal operativo). */
 const OPERATIONAL_POSTAL_MIN = 4;
 const OPERATIONAL_POSTAL_MAX = 10;
-const JOB_DEPT_ALLOWED_RE = /^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ0-9\s.,\-/&()+]+$/;
+
+/** Alineado con cityRegex en administrativeUserValidation (máx. 60). */
+const CITY_MAX = 60;
+/** Alineado con operationalUsersController / bulk (máx. 50). */
+const NAME_AND_JOB_MAX = 50;
+
+const NON_NAME_CHARS = /[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s-]/g;
+const NON_EMPLOYEE_ID_CHARS = /[^0-9A-Za-z-]/g;
+const NON_CITY_CHARS = /[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ0-9\s.,-]/g;
+
+/**
+ * Filtra entrada en vivo: solo caracteres permitidos y longitud máxima por campo
+ * (coherente con validateField y backend).
+ */
+function sanitizeFormFieldInput(name: keyof UserFormData, raw: string): string {
+  switch (name) {
+    case 'primerNombre':
+    case 'segundoNombre':
+    case 'apellido1':
+    case 'apellido2':
+      return raw.replace(NON_NAME_CHARS, '').slice(0, NAME_AND_JOB_MAX);
+    case 'puesto':
+    case 'departamento':
+      return raw.replace(NON_NAME_CHARS, '').slice(0, NAME_AND_JOB_MAX);
+    case 'cedula':
+      return raw.replace(NON_EMPLOYEE_ID_CHARS, '').slice(0, EMPLOYEE_ID_MAX);
+    case 'postalCode':
+      return raw.replace(/\s/g, '').replace(/\D/g, '').slice(0, OPERATIONAL_POSTAL_MAX);
+    case 'ciudad':
+      return raw.replace(NON_CITY_CHARS, '').slice(0, CITY_MAX);
+    default:
+      return raw;
+  }
+}
 
 /** Misma contraseña inicial que graphUserService.js (operativos / Microsoft 365). */
 export const INITIAL_PASSWORD_M365 = 'Aris1234*';
 
 type UserCreationType = 'operational' | 'administrative';
 
+/** Normaliza a formato título (primera letra mayúscula por palabra) para nombres en el payload. */
 const toTitleCase = (value: string): string =>
   value
     .toLowerCase()
@@ -62,6 +103,7 @@ type CreatedUser = {
   groupMemberships?: OperationalGroupMembershipResult[];
 };
 
+/** Resume un error de Graph (código + mensaje corto) para mostrar junto a una asignación de grupo M365. */
 function formatGraphErrorSuffix(g: OperationalGroupMembershipResult['graphError']): string {
   if (!g) return '';
   const bits = [
@@ -73,7 +115,9 @@ function formatGraphErrorSuffix(g: OperationalGroupMembershipResult['graphError'
   return bits.join(' · ');
 }
 
-/** Compatibilidad si el backend no envía groupMemberships. */
+/**
+ * Etiqueta legible para “grupo por sede” cuando el backend no envía `groupMemberships` (respuesta antigua).
+ */
 function operationalGroupAssignmentLabel(
   sede: string | undefined,
   groupObjectId: string | undefined,
@@ -89,6 +133,7 @@ function operationalGroupAssignmentLabel(
   return `${place} — no se pudo agregar (revise logs del backend)`;
 }
 
+/** Una fila de resultado: grupo sede o común, si se agregó el miembro y mensaje de error Graph si hubo fallo. */
 function OperationalGroupMembershipCard({
   m,
   sedeName,
@@ -274,6 +319,9 @@ type BulkRowResult = {
   queueAction?: 'create' | 'updateByEmployeeId';
 };
 
+/**
+ * Componente raíz del formulario: tipo de alta, campos, errores, masivos Excel y seguimiento de cola/resultado AD.
+ */
 const CreateUserForm = () => {
   const [userCreationType, setUserCreationType] =
     useState<UserCreationType>('operational');
@@ -297,6 +345,8 @@ const CreateUserForm = () => {
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [nextUserName, setNextUserName] = useState<string | null>(null);
+  /** Error al consultar GET next-username (API caída, 403, etc.). */
+  const [nextUserNameFetchError, setNextUserNameFetchError] = useState<string | null>(null);
   const [bulkFile, setBulkFile] = useState<File | null>(null);
   const [bulkStatus, setBulkStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
   const [bulkMessage, setBulkMessage] = useState<string>('');
@@ -349,9 +399,14 @@ const CreateUserForm = () => {
 
   const [adScriptResult, setAdScriptResult] = useState<AdQueueRequestResult | null>(null);
   const [adScriptPollExhausted, setAdScriptPollExhausted] = useState(false);
+  /** Último error al consultar resultado AD durante el polling (p. ej. 503 configuración). */
+  const [adPollLastError, setAdPollLastError] = useState<string | null>(null);
   const [adManualCheckLoading, setAdManualCheckLoading] = useState(false);
   const adPollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  /**
+   * Vista previa local (sin API): displayName, parte local del UPN y correo según dominio M365 o sufijo AD.
+   */
   const userPreview = useMemo<UserPreview | null>(() => {
     const rawPrimerNombre = formData.primerNombre.trim();
     const rawSegundoNombre = formData.segundoNombre.trim();
@@ -389,7 +444,10 @@ const CreateUserForm = () => {
     userCreationType,
   ]);
 
-  // Obtener de la API el nombre de usuario con el que quedará guardada la cuenta
+  /**
+   * Pide al backend el usuario/mailNickname propuesto (debounce 400 ms).
+   * Operativo: GET /users/next-username. Administrativo: GET .../administrative/next-username (tras prueba SMB si aplica).
+   */
   useEffect(() => {
     if (userCreationType === 'administrative' && !adminSmbGatePassed) {
       setNextUserName(null);
@@ -414,6 +472,7 @@ const CreateUserForm = () => {
     }
 
     const timeoutId = setTimeout(() => {
+      setNextUserNameFetchError(null);
       const req = {
         givenName: displayGivenName,
         surname1: apellido1Norm,
@@ -423,7 +482,19 @@ const CreateUserForm = () => {
         userCreationType === 'operational'
           ? getNextAvailableUsername(req)
           : getNextAdministrativeUsername(req);
-      promise.then((data) => setNextUserName(data.userName)).catch(() => setNextUserName(null));
+      promise
+        .then((data) => {
+          setNextUserName(data.userName);
+          setNextUserNameFetchError(null);
+        })
+        .catch((err: unknown) => {
+          setNextUserName(null);
+          setNextUserNameFetchError(
+            err instanceof Error
+              ? err.message
+              : 'No se pudo consultar el nombre de usuario propuesto.'
+          );
+        });
     }, 400);
 
     return () => clearTimeout(timeoutId);
@@ -436,6 +507,10 @@ const CreateUserForm = () => {
     adminSmbGatePassed,
   ]);
 
+  /**
+   * Tras encolar administrativo: consulta periódicamente `resultado-{requestId}.json` vía API hasta success/error
+   * o hasta agotar reintentos (UI invita a “Comprobar estado”).
+   */
   useEffect(() => {
     if (
       status !== 'success' ||
@@ -456,6 +531,7 @@ const CreateUserForm = () => {
 
     setAdScriptResult(null);
     setAdScriptPollExhausted(false);
+    setAdPollLastError(null);
 
     async function tick() {
       if (cancelled) return;
@@ -463,12 +539,16 @@ const CreateUserForm = () => {
         const r = await getAdministrativeQueueRequestResult(requestId);
         if (cancelled) return;
         if (r.status === 'success' || r.status === 'error') {
+          setAdPollLastError(null);
           setAdScriptResult(r);
           setAdScriptPollExhausted(false);
           return;
         }
-      } catch {
-        // Error de red o 503: reintentar hasta el máximo
+        setAdPollLastError(null);
+      } catch (e) {
+        setAdPollLastError(
+          e instanceof Error ? e.message : 'Error al consultar el estado en Active Directory.'
+        );
       }
       pollCount += 1;
       if (pollCount >= AD_RESULT_MAX_POLLS) {
@@ -520,6 +600,7 @@ const CreateUserForm = () => {
     });
   }, [adScriptResult, createdUser?.creationType]);
 
+  /** Una consulta manual al resultado AD (botón “Comprobar estado”), sin depender del polling. */
   const handleRefreshAdScriptResult = async () => {
     if (!createdUser?.requestId || createdUser.creationType !== 'administrative') return;
     setAdManualCheckLoading(true);
@@ -541,6 +622,9 @@ const CreateUserForm = () => {
     }
   };
 
+  /**
+   * Valida un campo según reglas alineadas al backend. @returns Mensaje de error o '' si es válido.
+   */
   const validateField = (name: keyof UserFormData, value: string): string => {
     if (name === 'cedula') {
       const t = value.trim();
@@ -584,8 +668,9 @@ const CreateUserForm = () => {
       const t = value.trim();
       if (t.length < 3) return 'Debe tener al menos 3 caracteres';
       if (t.length > 50) return 'No puede exceder 50 caracteres';
-      if (!JOB_DEPT_ALLOWED_RE.test(t)) {
-        return 'Use solo letras, números, espacios y . , - / & ( ) +';
+      const invalidChars = /[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s-]/;
+      if (invalidChars.test(t)) {
+        return 'Solo se permiten letras, espacios y guiones';
       }
       return '';
     }
@@ -605,6 +690,7 @@ const CreateUserForm = () => {
     return '';
   };
 
+  /** Valida todos los campos aplicables al tipo de alta y escribe el objeto `errors`. */
   const validateForm = (): boolean => {
     const newErrors: Partial<Record<keyof UserFormData, string>> = {};
 
@@ -687,12 +773,20 @@ const CreateUserForm = () => {
     return Object.keys(newErrors).length === 0;
   };
 
+  /**
+   * Cambio de input/select: en inputs aplica `sanitizeFormFieldInput`; limpia error del campo y resetea estado de envío si aplica.
+   */
   const handleChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
   ) => {
     const { name, value } = e.target;
+    const key = name as keyof UserFormData;
+    const nextValue =
+      e.target instanceof HTMLSelectElement
+        ? value
+        : sanitizeFormFieldInput(key, value);
 
-    setFormData((prev) => ({ ...prev, [name]: value }));
+    setFormData((prev) => ({ ...prev, [name]: nextValue }));
 
     if (errors[name as keyof UserFormData]) {
       setErrors((prev) => {
@@ -715,6 +809,7 @@ const CreateUserForm = () => {
     setBulkStatus('idle');
   };
 
+  /** POST masivo operativos: Excel → API; guarda `bulkResults` con estado por fila. */
   const handleBulkUpload = async () => {
     if (!bulkFile) {
       setBulkMessage('Por favor selecciona un archivo de Excel.');
@@ -760,6 +855,7 @@ const CreateUserForm = () => {
     setBulkAdminStatus('idle');
   };
 
+  /** POST masivo administrativos: Excel → encolado por fila; resultados en `bulkAdminResults`. */
   const handleBulkAdminUpload = async () => {
     if (!bulkAdminFile) {
       setBulkAdminMessage('Por favor selecciona un archivo de Excel.');
@@ -797,6 +893,7 @@ const CreateUserForm = () => {
     }
   };
 
+  /** Prueba escritura en UNC de cola; si OK activa `adminSmbGatePassed` y desbloquea el formulario administrativo. */
   const handleTestQueueConnection = async () => {
     setQueueConnStatus('loading');
     setQueueConnDetail(null);
@@ -805,16 +902,23 @@ const CreateUserForm = () => {
       setQueueConnDetail(data);
       setQueueConnStatus(data.ok ? 'success' : 'error');
       setAdminSmbGatePassed(!!data.ok);
-    } catch {
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : 'No se pudo contactar al servidor o la respuesta no es válida.';
       setQueueConnDetail({
         ok: false,
-        message: 'No se pudo contactar al servidor o la respuesta no es válida.',
+        message: msg,
       });
       setQueueConnStatus('error');
       setAdminSmbGatePassed(false);
     }
   };
 
+  /**
+   * Envío: `createOperationalUser` (M365) o `createUserViaAdQueue` (JSON en carpeta); éxito → `createdUser` y UI de resultado.
+   */
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!validateForm()) return;
@@ -904,6 +1008,7 @@ const CreateUserForm = () => {
     }
   };
 
+  /** Limpia formulario, resultados masivos, cola AD y timers para dar de alta otro usuario. */
   const handleCreateAnother = () => {
     if (adPollTimeoutRef.current) {
       clearTimeout(adPollTimeoutRef.current);
@@ -916,6 +1021,8 @@ const CreateUserForm = () => {
     setStatus('idle');
     setErrorMessage('');
     setNextUserName(null);
+    setNextUserNameFetchError(null);
+    setAdPollLastError(null);
     setBulkResults(null);
     setBulkAdminResults(null);
     setBulkAdminFile(null);
@@ -1422,10 +1529,17 @@ const CreateUserForm = () => {
                 </p>
               ) : null}
               {adScriptPollExhausted && !adScriptResult ? (
-                <p className="note" style={{ marginTop: 0 }}>
-                  No hubo respuesta en el tiempo de espera automático (unos 5 minutos). Ejecute el
-                  script en el servidor si aún no lo hizo o pulse «Comprobar estado».
-                </p>
+                <div style={{ marginTop: 0 }}>
+                  <p className="note">
+                    No hubo respuesta en el tiempo de espera automático (unos 5 minutos). Ejecute el
+                    script en el servidor si aún no lo hizo o pulse «Comprobar estado».
+                  </p>
+                  {adPollLastError ? (
+                    <p className="error-text" style={{ marginTop: 10, marginBottom: 0 }}>
+                      <strong>Detalle del último intento:</strong> {adPollLastError}
+                    </p>
+                  ) : null}
+                </div>
               ) : null}
               {adScriptResult?.status === 'success' ? (
                 <p className="note success-note" style={{ marginTop: 0 }}>
@@ -1610,6 +1724,8 @@ const CreateUserForm = () => {
               name="primerNombre"
               value={formData.primerNombre}
               onChange={handleChange}
+              maxLength={NAME_AND_JOB_MAX}
+              autoComplete="given-name"
             />
             {errors.primerNombre && (
               <p className="error-text">{errors.primerNombre}</p>
@@ -1622,6 +1738,8 @@ const CreateUserForm = () => {
               name="segundoNombre"
               value={formData.segundoNombre}
               onChange={handleChange}
+              maxLength={NAME_AND_JOB_MAX}
+              autoComplete="additional-name"
             />
             {errors.segundoNombre && (
               <p className="error-text">{errors.segundoNombre}</p>
@@ -1632,7 +1750,13 @@ const CreateUserForm = () => {
         <div className="two-col">
           <div className="field-group">
             <label>PRIMER APELLIDO *</label>
-            <input name="apellido1" value={formData.apellido1} onChange={handleChange} />
+            <input
+              name="apellido1"
+              value={formData.apellido1}
+              onChange={handleChange}
+              maxLength={NAME_AND_JOB_MAX}
+              autoComplete="family-name"
+            />
             {errors.apellido1 && (
               <p className="error-text">{errors.apellido1}</p>
             )}
@@ -1640,7 +1764,12 @@ const CreateUserForm = () => {
 
           <div className="field-group">
             <label>SEGUNDO APELLIDO</label>
-            <input name="apellido2" value={formData.apellido2} onChange={handleChange} />
+            <input
+              name="apellido2"
+              value={formData.apellido2}
+              onChange={handleChange}
+              maxLength={NAME_AND_JOB_MAX}
+            />
             {errors.apellido2 && (
               <p className="error-text">{errors.apellido2}</p>
             )}
@@ -1654,7 +1783,13 @@ const CreateUserForm = () => {
         <div className="two-col">
           <div className="field-group">
             <label>PUESTO *</label>
-            <input name="puesto" value={formData.puesto} onChange={handleChange} />
+            <input
+              name="puesto"
+              value={formData.puesto}
+              onChange={handleChange}
+              maxLength={NAME_AND_JOB_MAX}
+              autoComplete="organization-title"
+            />
             {errors.puesto && (
               <p className="error-text">{errors.puesto}</p>
             )}
@@ -1662,7 +1797,12 @@ const CreateUserForm = () => {
 
           <div className="field-group">
             <label>DEPARTAMENTO *</label>
-            <input name="departamento" value={formData.departamento} onChange={handleChange} />
+            <input
+              name="departamento"
+              value={formData.departamento}
+              onChange={handleChange}
+              maxLength={NAME_AND_JOB_MAX}
+            />
             {errors.departamento && (
               <p className="error-text">{errors.departamento}</p>
             )}
@@ -1696,12 +1836,24 @@ const CreateUserForm = () => {
           <div className="two-col">
             <div className="field-group">
               <label>CÉDULA / ID EMPLEADO *</label>
-              <input name="cedula" value={formData.cedula} onChange={handleChange} />
+              <input
+                name="cedula"
+                value={formData.cedula}
+                onChange={handleChange}
+                maxLength={EMPLOYEE_ID_MAX}
+                autoComplete="off"
+              />
               {errors.cedula && <p className="error-text">{errors.cedula}</p>}
             </div>
             <div className="field-group">
               <label>CIUDAD</label>
-              <input name="ciudad" value={formData.ciudad} onChange={handleChange} />
+              <input
+                name="ciudad"
+                value={formData.ciudad}
+                onChange={handleChange}
+                maxLength={CITY_MAX}
+                autoComplete="address-level2"
+              />
               {errors.ciudad && <p className="error-text">{errors.ciudad}</p>}
             </div>
           </div>
@@ -1710,9 +1862,11 @@ const CreateUserForm = () => {
             <input
               name="postalCode"
               inputMode="numeric"
+              pattern="[0-9]*"
               autoComplete="postal-code"
               value={formData.postalCode}
               onChange={handleChange}
+              maxLength={OPERATIONAL_POSTAL_MAX}
             />
             {errors.postalCode && (
               <p className="error-text">{errors.postalCode}</p>
@@ -1733,9 +1887,11 @@ const CreateUserForm = () => {
             <input
               name="postalCode"
               inputMode="numeric"
+              pattern="[0-9]*"
               autoComplete="postal-code"
               value={formData.postalCode}
               onChange={handleChange}
+              maxLength={OPERATIONAL_POSTAL_MAX}
             />
             {errors.postalCode && (
               <p className="error-text">{errors.postalCode}</p>
@@ -1764,6 +1920,11 @@ const CreateUserForm = () => {
           <div className="field-group">
             <label>USUARIO (con el que quedará guardado)</label>
             <div className="preview-box">{nextUserName ?? userPreview?.userName ?? '—'}</div>
+            {nextUserNameFetchError ? (
+              <p className="error-text" style={{ marginTop: 8, marginBottom: 0 }}>
+                {nextUserNameFetchError}
+              </p>
+            ) : null}
           </div>
         </div>
       </section>

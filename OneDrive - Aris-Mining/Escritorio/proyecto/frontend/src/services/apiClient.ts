@@ -1,3 +1,7 @@
+/**
+ * Cliente HTTP del front hacia la API Express (`/api/users/...`).
+ * Centraliza base URL, extracción de mensajes de error del JSON del servidor y llamadas por caso de uso.
+ */
 import axios from 'axios';
 import {
   CreateUserRequest,
@@ -38,6 +42,7 @@ function resolveApiBaseUrl(raw: string | undefined): string {
 
 const API_BASE_URL = resolveApiBaseUrl(import.meta.env.VITE_API_BASE_URL);
 
+/** Instancia Axios compartida (JSON; multipart se redefine en masivos). */
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
   headers: {
@@ -45,6 +50,7 @@ const apiClient = axios.create({
   },
 });
 
+/** Alta individual en Microsoft 365 (POST /api/users/operational). */
 export const createOperationalUser = async (
   payload: CreateUserRequest
 ): Promise<CreateUserResponse> => {
@@ -55,14 +61,7 @@ export const createOperationalUser = async (
     );
     return response.data;
   } catch (error) {
-    if (axios.isAxiosError(error)) {
-      if (error.response) {
-        const message = error.response.data?.message || error.response.data?.error || 'Error al crear el usuario';
-        throw new Error(message);
-      }
-      throw new Error('Error de conexión con el servidor');
-    }
-    throw error;
+    throw new Error(getAxiosErrorMessage(error, 'Error al crear el usuario'));
   }
 };
 
@@ -85,17 +84,9 @@ export const createUserViaAdQueue = async (
       data?.message || data?.error || `Error al encolar el usuario administrativo (${response.status})`;
     throw new Error(message);
   } catch (error) {
-    if (axios.isAxiosError(error)) {
-      if (error.response) {
-        const message =
-          error.response.data?.message ||
-          error.response.data?.error ||
-          'Error al encolar el usuario administrativo';
-        throw new Error(message);
-      }
-      throw new Error('Error de conexión con el servidor');
-    }
-    throw error;
+    throw new Error(
+      getAxiosErrorMessage(error, 'Error al encolar el usuario administrativo')
+    );
   }
 };
 
@@ -117,28 +108,28 @@ export const createAdministrativeUser = async (
       data?.message || data?.error || `Error al encolar el usuario administrativo (${response.status})`;
     throw new Error(message);
   } catch (error) {
-    if (axios.isAxiosError(error)) {
-      if (error.response) {
-        const message =
-          error.response.data?.message ||
-          error.response.data?.error ||
-          'Error al encolar el usuario administrativo';
-        throw new Error(message);
-      }
-      throw new Error('Error de conexión con el servidor');
-    }
-    throw error;
-  }
-};
-
-export const testAdministrativeQueueConnection =
-  async (): Promise<AdQueueConnectionTestResult> => {
-    const response = await apiClient.get<AdQueueConnectionTestResult>(
-      '/users/administrative/queue-connection-test'
+    throw new Error(
+      getAxiosErrorMessage(error, 'Error al encolar el usuario administrativo')
     );
-    return response.data;
+  }
   };
 
+/** Comprueba que el servidor pueda acceder a la carpeta UNC de la cola AD (lectura/escritura). */
+export const testAdministrativeQueueConnection =
+  async (): Promise<AdQueueConnectionTestResult> => {
+    try {
+      const response = await apiClient.get<AdQueueConnectionTestResult>(
+        '/users/administrative/queue-connection-test'
+      );
+      return response.data;
+    } catch (error) {
+      throw new Error(
+        getAxiosErrorMessage(error, 'No se pudo probar la conexión a la cola.')
+      );
+    }
+  };
+
+/** Devuelve el primer valor string no vacío entre las claves dadas (útil para respuestas con distinto casing). */
 function pickString(obj: Record<string, unknown>, ...keys: string[]): string | undefined {
   for (const k of keys) {
     const v = obj[k];
@@ -147,13 +138,33 @@ function pickString(obj: Record<string, unknown>, ...keys: string[]): string | u
   return undefined;
 }
 
-/** Mensaje legible desde cuerpos JSON de error del backend (message / error). */
+/** Extrae `message` o `error` del cuerpo JSON del servidor (variantes de mayúsculas). */
 function extractApiErrorBody(data: unknown, fallback: string): string {
   if (data && typeof data === 'object') {
     const o = data as Record<string, unknown>;
     const msg = pickString(o, 'message', 'Message', 'error', 'Error');
     if (msg) return msg;
   }
+  return fallback;
+}
+
+/**
+ * Mensaje para mostrar al usuario ante fallos de Axios (cuerpo JSON, texto plano o red).
+ */
+export function getAxiosErrorMessage(error: unknown, fallback: string): string {
+  if (axios.isAxiosError(error)) {
+    if (error.response) {
+      const { data, status } = error.response;
+      if (typeof data === 'string' && data.trim()) {
+        return data.trim().slice(0, 500);
+      }
+      const fromBody = extractApiErrorBody(data, '');
+      if (fromBody) return fromBody;
+      return `${fallback} (HTTP ${status}).`;
+    }
+    return 'Error de conexión con el servidor';
+  }
+  if (error instanceof Error && error.message) return error.message;
   return fallback;
 }
 
@@ -218,6 +229,7 @@ export const getAdministrativeQueueRequestResult = async (
   );
 };
 
+/** Propuesta de `userName` para administrativos (misma regla de unicidad que aplicará el script AD). */
 export const getNextAdministrativeUsername = async (params: {
   givenName: string;
   surname1: string;
@@ -228,12 +240,22 @@ export const getNextAdministrativeUsername = async (params: {
     surname1: params.surname1,
   });
   if (params.surname2) searchParams.set('surname2', params.surname2);
-  const response = await apiClient.get<NextUsernameResponse>(
-    `/users/administrative/next-username?${searchParams.toString()}`
-  );
-  return response.data;
+  try {
+    const response = await apiClient.get<NextUsernameResponse>(
+      `/users/administrative/next-username?${searchParams.toString()}`
+    );
+    return response.data;
+  } catch (error) {
+    throw new Error(
+      getAxiosErrorMessage(
+        error,
+        'No se pudo obtener el nombre de usuario propuesto (administrativo).'
+      )
+    );
+  }
 };
 
+/** Propuesta de `userName` para operativos M365 (Graph / backend). */
 export const getNextAvailableUsername = async (params: {
   givenName: string;
   surname1: string;
@@ -244,10 +266,19 @@ export const getNextAvailableUsername = async (params: {
     surname1: params.surname1,
   });
   if (params.surname2) searchParams.set('surname2', params.surname2);
-  const response = await apiClient.get<NextUsernameResponse>(
-    `/users/next-username?${searchParams.toString()}`
-  );
-  return response.data;
+  try {
+    const response = await apiClient.get<NextUsernameResponse>(
+      `/users/next-username?${searchParams.toString()}`
+    );
+    return response.data;
+  } catch (error) {
+    throw new Error(
+      getAxiosErrorMessage(
+        error,
+        'No se pudo obtener el nombre de usuario propuesto (operativo).'
+      )
+    );
+  }
 };
 
 /** Respuesta 201 de carga masiva operativa o administrativa. */
@@ -256,18 +287,28 @@ export interface BulkUploadApiResponse {
   results?: unknown[];
 }
 
+/** Excel masivo operativo: envía multipart a `/users/operational/bulk`. */
 export const uploadBulkUsers = async (file: File): Promise<BulkUploadApiResponse> => {
   const formData = new FormData();
   formData.append('file', file);
 
-  const response = await apiClient.post('/users/operational/bulk', formData, {
-    headers: {
-      // Deja que el navegador establezca el boundary correcto
-      'Content-Type': 'multipart/form-data',
-    },
-  });
+  try {
+    const response = await apiClient.post('/users/operational/bulk', formData, {
+      headers: {
+        // Deja que el navegador establezca el boundary correcto
+        'Content-Type': 'multipart/form-data',
+      },
+    });
 
-  return response.data;
+    return response.data;
+  } catch (error) {
+    throw new Error(
+      getAxiosErrorMessage(
+        error,
+        'Error al procesar la carga masiva de usuarios operativos.'
+      )
+    );
+  }
 };
 
 /** Carga masiva administrativa (cola AD / SMB). Misma plantilla que operativos + Cedula y opcional Ciudad. */
@@ -277,13 +318,23 @@ export const uploadAdministrativeBulkUsers = async (
   const formData = new FormData();
   formData.append('file', file);
 
-  const response = await apiClient.post('/users/administrative/bulk', formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data',
-    },
-  });
+  try {
+    const response = await apiClient.post('/users/administrative/bulk', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
 
-  return response.data;
+    return response.data;
+  } catch (error) {
+    throw new Error(
+      getAxiosErrorMessage(
+        error,
+        'Error al procesar la carga masiva de usuarios administrativos.'
+      )
+    );
+  }
 };
 
+/** Instancia por defecto para interceptores o pruebas; las funciones exportadas usan la misma base. */
 export default apiClient;

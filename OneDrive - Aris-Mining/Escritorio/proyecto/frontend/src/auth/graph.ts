@@ -1,9 +1,13 @@
+/**
+ * Llamadas mínimas a Microsoft Graph: token silencioso y verificación de membresía de grupo (autorización de la app).
+ */
 import type { AccountInfo } from '@azure/msal-browser';
 import { msalInstance } from './msalInstance';
 import { graphScopes, logiGroupId } from './msalConfig';
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 
+/** Token de acceso para `graphScopes` (sin UI si hay sesión cacheada). */
 async function getGraphAccessToken(account: AccountInfo): Promise<string> {
   const result = await msalInstance.acquireTokenSilent({
     account,
@@ -12,6 +16,7 @@ async function getGraphAccessToken(account: AccountInfo): Promise<string> {
   return result.accessToken;
 }
 
+/** GET/POST JSON a Graph con Bearer; lanza con cuerpo de error si `!res.ok`. */
 async function graphFetch<T>(
   url: string,
   accessToken: string,
@@ -34,6 +39,10 @@ async function graphFetch<T>(
   return (await res.json()) as T;
 }
 
+/**
+ * Autorización de front: el usuario debe pertenecer al grupo `VITE_AZURE_LOGI_GROUP_ID`.
+ * Usa `POST /me/checkMemberGroups` (no expone listados de grupos).
+ */
 export async function ensureUserInLogiGroup(account: AccountInfo): Promise<void> {
   if (!logiGroupId) {
     throw new Error(

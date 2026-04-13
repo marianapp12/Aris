@@ -59,6 +59,14 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
 }
 
 .brand {
@@ -532,7 +540,42 @@
 }
 
 /* ── Responsive ────────────────────────────────────────────────────────── */
+@media (max-width: 680px) {
+  .app-header {
+    padding: 0 1rem;
+  }
+
+  .header-inner {
+    height: auto;
+    min-height: 56px;
+    flex-wrap: wrap;
+    padding: 10px 0;
+    row-gap: 10px;
+  }
+
+  .brand {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .header-actions {
+    flex: 1 1 100%;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .brand-name {
+    letter-spacing: 1.2px;
+    font-size: 12px;
+  }
+}
+
 @media (max-width: 600px) {
+  .app-main {
+    padding: 1.5rem 1rem;
+  }
+
   .form-card { padding: 1.5rem; }
   .form-row.two-col { grid-template-columns: 1fr; }
   .derived-grid { grid-template-columns: 1fr; }
