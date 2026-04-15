@@ -32,6 +32,7 @@ export function getAdQueueConfig() {
      * Con AD_QUEUE_REQUIRE_GRAPH_FOR_ADMIN=true el encolado fallará si también está skip activo. */
     skipGraphPrecheck: skip === 'true' || skip === '1',
     requireGraphForAdmin: requireGraph === 'true' || requireGraph === '1',
+    /** Contenedor LDAP bajo el cual cuelgan las OU por sede (ver administrativeCitySite.js y AD_QUEUE_OU_LEAF_PREFIX). */
     ouDn: process.env.AD_QUEUE_OU_DN?.trim() || undefined,
     /** Empresa (atributo Company en AD); va en el JSON como `empresa`. */
     company: process.env.AD_QUEUE_COMPANY?.trim() || undefined,

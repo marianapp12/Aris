@@ -1,5 +1,10 @@
 /**
- * Genera plantilla-administrativos.xlsx en frontend/public (desde carpeta backend: node scripts/generatePlantillaAdministrativos.mjs).
+ * Genera plantilla-administrativos.xlsx en frontend/public (desde backend: node scripts/generatePlantillaAdministrativos.mjs).
+ * Ciudad: valores como en el formulario (Segovia, Medellín, Bogotá, PSN, Marmato, Lower Mine; compat. Overmain/Overmine).
+ *
+ * ADVERTENCIA: este script SOBRESCRIBE el .xlsx completo. No ejecutarlo si ya tiene una plantilla
+ * corporativa con estilos, tablas o validaciones en ese path; copie su archivo a otro sitio antes,
+ * o use VITE_PLANTILLA_ADMINISTRATIVOS_URL en el frontend para servir la plantilla desde SharePoint u otra URL.
  */
 import XLSX from 'xlsx';
 import path from 'path';
@@ -11,7 +16,7 @@ const outDir = path.resolve(__dirname, '../../frontend/public');
 const outFile = path.join(outDir, 'plantilla-administrativos.xlsx');
 
 const rows = [
-  ['CREACIÓN DE USUARIOS - ADMINISTRATIVOS (COLA AD)', '', '', '', '', '', '', ''],
+  ['CREACIÓN DE USUARIOS - ADMINISTRATIVOS (COLA AD)', '', '', '', '', '', '', '', ''],
   [
     'Primer Nombre',
     'Segundo Nombre',
@@ -21,8 +26,9 @@ const rows = [
     'Departamento',
     'Cedula',
     'Ciudad',
+    'Codigo postal',
   ],
-  ['', '', '', '', '', '', '', ''],
+  ['Juan', '', 'Pérez', '', 'Analista', 'TI', '12345678', 'Medellín', '050021'],
 ];
 
 const ws = XLSX.utils.aoa_to_sheet(rows);

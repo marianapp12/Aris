@@ -1,7 +1,6 @@
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type ReactNode } from 'react';
 import {
   UserFormData,
-  UserPreview,
   AdQueueRequestResult,
   OPERATIONAL_SEDE_OPTIONS,
   type OperationalGroupMembershipResult,
@@ -11,25 +10,104 @@ import {
   createOperationalUser,
   createUserViaAdQueue,
   getAdministrativeQueueRequestResult,
-  getNextAvailableUsername,
-  getNextAdministrativeUsername,
   testAdministrativeQueueConnection,
   uploadBulkUsers,
   uploadAdministrativeBulkUsers,
 } from '../services/apiClient';
-import { generateUserName, generateDisplayName } from '../utils/userNameGenerator';
+import {
+  ADMINISTRATIVE_CITY_SELECT_OPTIONS,
+  isAdministrativeCityFormValue,
+} from '../constants/administrativeCities';
 import './CreateUserForm.css';
 
 /**
  * Formulario de creación de usuarios:
  * - Operativo: envío al backend → Microsoft Graph (cuenta M365).
  * - Administrativo: prueba SMB (opcional) → encolado JSON → script PowerShell en el servidor (AD).
- * Incluye validación en cliente, filtrado de entrada, vista previa, carga masiva Excel y polling del resultado AD.
+ * Incluye validación en cliente, filtrado de entrada, carga masiva Excel y polling del resultado AD.
  */
 
-const DOMAIN = '@realizandoprueba123hotmail.onmicrosoft.com';
-const AD_UPN_SUFFIX =
-  (import.meta.env.VITE_AD_UPN_SUFFIX as string | undefined)?.trim() || 'ad.local';
+function plantillaHrefFromEnv(
+  envUrl: string | undefined,
+  publicRelativeFile: string
+): string {
+  const u = envUrl?.trim();
+  if (u && /^https?:\/\//i.test(u)) return u;
+  return `${import.meta.env.BASE_URL}${publicRelativeFile}`;
+}
+
+function plantillaDownloadLinkProps(
+  href: string,
+  downloadFileName: string
+): { download?: string; target?: '_blank'; rel?: string } {
+  if (/^https?:\/\//i.test(href)) {
+    return { target: '_blank', rel: 'noopener noreferrer' };
+  }
+  return { download: downloadFileName };
+}
+
+const PLANTILLA_OPERARIOS_HREF = plantillaHrefFromEnv(
+  import.meta.env.VITE_PLANTILLA_OPERARIOS_URL,
+  'plantilla-operarios.xlsx'
+);
+const PLANTILLA_ADMINISTRATIVOS_HREF = plantillaHrefFromEnv(
+  import.meta.env.VITE_PLANTILLA_ADMINISTRATIVOS_URL,
+  'plantilla-administrativos.xlsx'
+);
+
+function plantillaOrigenNote(
+  href: string,
+  kind: 'operational' | 'administrative'
+): ReactNode {
+  const remoto = /^https?:\/\//i.test(href);
+  const envVarName =
+    kind === 'operational'
+      ? 'VITE_PLANTILLA_OPERARIOS_URL'
+      : 'VITE_PLANTILLA_ADMINISTRATIVOS_URL';
+
+  if (remoto) {
+    return (
+      <div
+        className="plantilla-remoto-callout"
+        role="region"
+        aria-label="Instrucciones para obtener la plantilla desde SharePoint"
+      >
+        <div className="plantilla-remoto-callout__title">Plantilla en línea (SharePoint)</div>
+        <p className="plantilla-remoto-callout__lead">
+          Este botón abre la plantilla en <strong>SharePoint</strong> o en <strong>Excel en el navegador</strong>.
+        </p>
+        <ol className="plantilla-remoto-callout__list">
+          <li>
+            Si se le solicita acceso, inicie sesión en <strong>Microsoft 365</strong> en este navegador y
+            pulse de nuevo el botón <strong>Descargar plantilla</strong>.
+          </li>
+          <li>
+            Cuando vea la vista previa del libro, abra el menú <strong>Archivo</strong> y elija{' '}
+            <strong>Crear una copia</strong> o <strong>Descargar</strong> (o la opción equivalente que muestre
+            su pantalla) para guardar una copia en su equipo.
+          </li>
+          <li>
+            Trabaje <strong>siempre</strong> sobre esa copia local: complete los datos, guarde el archivo y
+            súbalo a esta aplicación con el botón <strong>Elegir archivo</strong>.
+          </li>
+        </ol>
+        <p className="plantilla-remoto-callout__footer">
+          De ese modo conserva el diseño de la plantilla publicada en la nube y no sobrescribe el original
+          compartido.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <p className="note" style={{ marginTop: 8, marginBottom: 0 }}>
+      Ahora se usa la plantilla incluida en la web. Para que todos descarguen <strong>siempre</strong> la
+      misma plantilla con diseño desde <strong>SharePoint</strong>, defina <code>{envVarName}</code> en{' '}
+      <code>frontend/.env</code> (URL que empiece por <code>https://</code>) y reinicie el frontend; véase{' '}
+      <code>frontend/.env.example</code> y el README del proyecto.
+    </p>
+  );
+}
 
 /** Alineado con backend (administrativeUserValidation). */
 const EMPLOYEE_ID_MIN = 5;
@@ -39,14 +117,11 @@ const EMPLOYEE_ID_MAX = 32;
 const OPERATIONAL_POSTAL_MIN = 4;
 const OPERATIONAL_POSTAL_MAX = 10;
 
-/** Alineado con cityRegex en administrativeUserValidation (máx. 60). */
-const CITY_MAX = 60;
 /** Alineado con operationalUsersController / bulk (máx. 50). */
 const NAME_AND_JOB_MAX = 50;
 
 const NON_NAME_CHARS = /[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s-]/g;
 const NON_EMPLOYEE_ID_CHARS = /[^0-9A-Za-z-]/g;
-const NON_CITY_CHARS = /[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ0-9\s.,-]/g;
 
 /**
  * Filtra entrada en vivo: solo caracteres permitidos y longitud máxima por campo
@@ -67,11 +142,28 @@ function sanitizeFormFieldInput(name: keyof UserFormData, raw: string): string {
     case 'postalCode':
       return raw.replace(/\s/g, '').replace(/\D/g, '').slice(0, OPERATIONAL_POSTAL_MAX);
     case 'ciudad':
-      return raw.replace(NON_CITY_CHARS, '').slice(0, CITY_MAX);
+      return raw;
     default:
       return raw;
   }
 }
+
+/** Etiquetas legibles para el resumen de validación (modal). */
+const FORM_FIELD_LABELS: Record<keyof UserFormData, string> = {
+  primerNombre: 'Primer nombre',
+  segundoNombre: 'Segundo nombre',
+  apellido1: 'Primer apellido',
+  apellido2: 'Segundo apellido',
+  puesto: 'Puesto',
+  departamento: 'Departamento',
+  sede: 'Sede',
+  postalCode: 'Código postal',
+  cedula: 'Cédula / ID',
+  ciudad: 'Ciudad / sede',
+};
+
+/** Sufijo en etiquetas de campos obligatorios (sustituye el asterisco). */
+const CAMPO_OBLIGATORIO = ' (campo Obligatorio)';
 
 /** Misma contraseña inicial que graphUserService.js (operativos / Microsoft 365). */
 export const INITIAL_PASSWORD_M365 = 'Aris1234*';
@@ -101,6 +193,8 @@ type CreatedUser = {
   groupObjectId?: string;
   groupMemberAdded?: boolean;
   groupMemberships?: OperationalGroupMembershipResult[];
+  /** OU de destino en Active Directory (alta administrativa encolada). */
+  adOrganizationalUnitDn?: string;
 };
 
 /** Resume un error de Graph (código + mensaje corto) para mostrar junto a una asignación de grupo M365. */
@@ -299,8 +393,14 @@ const SMB_QUEUE_HELP_STEPS: string[] = [
   'Vuelva a pulsar “Probar conexión” cuando haya completado los pasos anteriores.',
 ];
 
-const AD_RESULT_POLL_MS = 4000;
-const AD_RESULT_MAX_POLLS = 75;
+/** Intervalo entre consultas a resultado-{requestId}.json (administrativo / AD). */
+const AD_RESULT_POLL_MS = 1000;
+/** Ventana total de polling automático antes de mostrar “Comprobar estado”. */
+const AD_RESULT_MAX_POLLS = 300;
+const AD_RESULT_POLL_WINDOW_MINUTES = Math.max(
+  1,
+  Math.round((AD_RESULT_MAX_POLLS * AD_RESULT_POLL_MS) / 60_000)
+);
 
 /** Fila devuelta por POST .../bulk (operativo o administrativo). */
 type BulkRowResult = {
@@ -317,6 +417,7 @@ type BulkRowResult = {
   requestId?: string;
   proposedUserName?: string;
   queueAction?: 'create' | 'updateByEmployeeId';
+  adOrganizationalUnitDn?: string;
 };
 
 /**
@@ -342,11 +443,11 @@ const CreateUserForm = () => {
   const [createdUser, setCreatedUser] = useState<CreatedUser | null>(null);
 
   const [errors, setErrors] = useState<Partial<Record<keyof UserFormData, string>>>({});
+  /** Modal al fallar validación al enviar: lista de campos con error. */
+  const [validationModalOpen, setValidationModalOpen] = useState(false);
+  const [validationModalLines, setValidationModalLines] = useState<string[]>([]);
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState<string>('');
-  const [nextUserName, setNextUserName] = useState<string | null>(null);
-  /** Error al consultar GET next-username (API caída, 403, etc.). */
-  const [nextUserNameFetchError, setNextUserNameFetchError] = useState<string | null>(null);
   const [bulkFile, setBulkFile] = useState<File | null>(null);
   const [bulkStatus, setBulkStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
   const [bulkMessage, setBulkMessage] = useState<string>('');
@@ -403,109 +504,6 @@ const CreateUserForm = () => {
   const [adPollLastError, setAdPollLastError] = useState<string | null>(null);
   const [adManualCheckLoading, setAdManualCheckLoading] = useState(false);
   const adPollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  /**
-   * Vista previa local (sin API): displayName, parte local del UPN y correo según dominio M365 o sufijo AD.
-   */
-  const userPreview = useMemo<UserPreview | null>(() => {
-    const rawPrimerNombre = formData.primerNombre.trim();
-    const rawSegundoNombre = formData.segundoNombre.trim();
-    const rawApellido1 = formData.apellido1.trim();
-    const rawApellido2 = formData.apellido2.trim();
-
-    const primerNombreNorm = toTitleCase(rawPrimerNombre);
-    const segundoNombreNorm = rawSegundoNombre ? toTitleCase(rawSegundoNombre) : '';
-    const apellido1Norm = toTitleCase(rawApellido1);
-    const apellido2Norm = rawApellido2 ? toTitleCase(rawApellido2) : '';
-
-    const displayGivenName = [primerNombreNorm, segundoNombreNorm]
-      .filter(Boolean)
-      .join(' ');
-
-    const fullSurname = [apellido1Norm, apellido2Norm].filter(Boolean).join(' ');
-
-    const givenNameForUserName = primerNombreNorm;
-
-    if (!givenNameForUserName || !apellido1Norm) return null;
-
-    const displayName = generateDisplayName(displayGivenName, fullSurname);
-    const userName = generateUserName(givenNameForUserName, apellido1Norm);
-    const email =
-      userCreationType === 'operational'
-        ? `${userName}${DOMAIN}`
-        : `${userName}@${AD_UPN_SUFFIX}`;
-
-    return { displayName, userName, email };
-  }, [
-    formData.primerNombre,
-    formData.segundoNombre,
-    formData.apellido1,
-    formData.apellido2,
-    userCreationType,
-  ]);
-
-  /**
-   * Pide al backend el usuario/mailNickname propuesto (debounce 400 ms).
-   * Operativo: GET /users/next-username. Administrativo: GET .../administrative/next-username (tras prueba SMB si aplica).
-   */
-  useEffect(() => {
-    if (userCreationType === 'administrative' && !adminSmbGatePassed) {
-      setNextUserName(null);
-      return;
-    }
-
-    const rawPrimerNombre = formData.primerNombre.trim();
-    const rawSegundoNombre = formData.segundoNombre.trim();
-    const rawApellido1 = formData.apellido1.trim();
-    const rawApellido2 = formData.apellido2.trim();
-
-    const primerNombreNorm = toTitleCase(rawPrimerNombre);
-    const segundoNombreNorm = rawSegundoNombre ? toTitleCase(rawSegundoNombre) : '';
-    const apellido1Norm = toTitleCase(rawApellido1);
-    const apellido2Norm = rawApellido2 ? toTitleCase(rawApellido2) : '';
-
-    const displayGivenName = [primerNombreNorm, segundoNombreNorm].filter(Boolean).join(' ');
-
-    if (primerNombreNorm.length < 3 || apellido1Norm.length < 3) {
-      setNextUserName(null);
-      return;
-    }
-
-    const timeoutId = setTimeout(() => {
-      setNextUserNameFetchError(null);
-      const req = {
-        givenName: displayGivenName,
-        surname1: apellido1Norm,
-        surname2: apellido2Norm || undefined,
-      };
-      const promise =
-        userCreationType === 'operational'
-          ? getNextAvailableUsername(req)
-          : getNextAdministrativeUsername(req);
-      promise
-        .then((data) => {
-          setNextUserName(data.userName);
-          setNextUserNameFetchError(null);
-        })
-        .catch((err: unknown) => {
-          setNextUserName(null);
-          setNextUserNameFetchError(
-            err instanceof Error
-              ? err.message
-              : 'No se pudo consultar el nombre de usuario propuesto.'
-          );
-        });
-    }, 400);
-
-    return () => clearTimeout(timeoutId);
-  }, [
-    formData.primerNombre,
-    formData.segundoNombre,
-    formData.apellido1,
-    formData.apellido2,
-    userCreationType,
-    adminSmbGatePassed,
-  ]);
 
   /**
    * Tras encolar administrativo: consulta periódicamente `resultado-{requestId}.json` vía API hasta success/error
@@ -640,9 +638,11 @@ const CreateUserForm = () => {
       return '';
     }
 
-    if (name === 'ciudad' && value.trim()) {
-      if (!/^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ0-9\s.,-]{1,60}$/.test(value.trim())) {
-        return 'Caracteres no permitidos en ciudad';
+    if (name === 'ciudad') {
+      const t = value.trim();
+      if (userCreationType === 'administrative') {
+        if (!t) return 'Seleccione una sede';
+        if (!isAdministrativeCityFormValue(t)) return 'Sede no válida';
       }
       return '';
     }
@@ -690,8 +690,13 @@ const CreateUserForm = () => {
     return '';
   };
 
-  /** Valida todos los campos aplicables al tipo de alta y escribe el objeto `errors`. */
-  const validateForm = (): boolean => {
+  /**
+   * Valida todos los campos aplicables al tipo de alta, actualiza `errors` y devuelve si el formulario es válido.
+   */
+  const validateForm = (): {
+    valid: boolean;
+    errors: Partial<Record<keyof UserFormData, string>>;
+  } => {
     const newErrors: Partial<Record<keyof UserFormData, string>> = {};
 
     const required: (keyof UserFormData)[] = [
@@ -702,6 +707,9 @@ const CreateUserForm = () => {
     ];
     if (userCreationType === 'operational' || userCreationType === 'administrative') {
       required.push('postalCode');
+    }
+    if (userCreationType === 'administrative') {
+      required.push('ciudad');
     }
 
     const allFields: (keyof UserFormData)[] = [
@@ -752,7 +760,7 @@ const CreateUserForm = () => {
       }
 
       if (field === 'ciudad') {
-        if (!value.trim()) return;
+        if (userCreationType !== 'administrative') return;
         const error = validateField(field, value);
         if (error) newErrors[field] = error;
         return;
@@ -770,7 +778,8 @@ const CreateUserForm = () => {
     });
 
     setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
+    const valid = Object.keys(newErrors).length === 0;
+    return { valid, errors: newErrors };
   };
 
   /**
@@ -921,7 +930,15 @@ const CreateUserForm = () => {
    */
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!validateForm()) return;
+    const { valid, errors: nextErrors } = validateForm();
+    if (!valid) {
+      const lines = (Object.entries(nextErrors) as [keyof UserFormData, string][]).map(
+        ([key, msg]) => `${FORM_FIELD_LABELS[key]}: ${msg}`
+      );
+      setValidationModalLines(lines);
+      setValidationModalOpen(true);
+      return;
+    }
 
     setStatus('loading');
 
@@ -960,7 +977,7 @@ const CreateUserForm = () => {
         ...(userCreationType === 'administrative'
           ? {
               employeeId: formData.cedula.trim(),
-              city: formData.ciudad.trim() || undefined,
+              city: formData.ciudad.trim(),
               postalCode: formData.postalCode.replace(/\s/g, '').trim(),
             }
           : {}),
@@ -997,6 +1014,7 @@ const CreateUserForm = () => {
           requestId: accepted.requestId,
           creationType: 'administrative',
           adminQueueAction: accepted.queueAction ?? 'create',
+          adOrganizationalUnitDn: accepted.adOrganizationalUnitDn,
         });
         setStatus('success');
       }
@@ -1020,8 +1038,6 @@ const CreateUserForm = () => {
     setCreatedUser(null);
     setStatus('idle');
     setErrorMessage('');
-    setNextUserName(null);
-    setNextUserNameFetchError(null);
     setAdPollLastError(null);
     setBulkResults(null);
     setBulkAdminResults(null);
@@ -1190,6 +1206,16 @@ const CreateUserForm = () => {
                   <span className="success-label">ID DE SOLICITUD</span>
                   <span className="success-value mono">{u.requestId ?? '—'}</span>
                 </div>
+                {u.adOrganizationalUnitDn?.trim() && (
+                  <div className="success-row">
+                    <span className="success-label">
+                      UBICACIÓN EN ACTIVE DIRECTORY (OU)
+                    </span>
+                    <span className="success-value mono">
+                      {u.adOrganizationalUnitDn.trim()}
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
           ))}
@@ -1420,6 +1446,9 @@ const CreateUserForm = () => {
     const isAdminProfileUpdate =
       createdUser.creationType === 'administrative' &&
       createdUser.adminQueueAction === 'updateByEmployeeId';
+    const adminAdIdentityConfirmed =
+      createdUser.creationType === 'administrative' &&
+      adScriptResult?.status === 'success';
 
     return (
       <div className="success-wrapper">
@@ -1457,15 +1486,35 @@ const CreateUserForm = () => {
                   ? 'UPN / CORREO'
                   : 'CORREO CORPORATIVO'}
               </span>
-              <span className="success-value highlight">
-                {createdUser.email}
+              <span
+                className={
+                  createdUser.creationType === 'administrative' && !adminAdIdentityConfirmed
+                    ? 'success-value success-value--pending'
+                    : 'success-value highlight'
+                }
+              >
+                {createdUser.creationType === 'administrative' && !adminAdIdentityConfirmed
+                  ? adScriptResult?.status === 'error'
+                    ? 'No confirmado — revise el resultado en Active Directory más abajo.'
+                    : 'Se mostrará cuando Active Directory confirme la solicitud.'
+                  : createdUser.email}
               </span>
             </div>
 
             <div className="success-row">
               <span className="success-label">USUARIO</span>
-              <span className="success-value">
-                {createdUser.userName}
+              <span
+                className={
+                  createdUser.creationType === 'administrative' && !adminAdIdentityConfirmed
+                    ? 'success-value success-value--pending'
+                    : 'success-value'
+                }
+              >
+                {createdUser.creationType === 'administrative' && !adminAdIdentityConfirmed
+                  ? adScriptResult?.status === 'error'
+                    ? 'No confirmado — revise el resultado más abajo.'
+                    : 'Se mostrará cuando Active Directory confirme la solicitud.'
+                  : createdUser.userName}
               </span>
             </div>
 
@@ -1493,6 +1542,18 @@ const CreateUserForm = () => {
                 <span className="success-value mono">{createdUser.requestId}</span>
               </div>
             )}
+
+            {createdUser.creationType === 'administrative' &&
+              createdUser.adOrganizationalUnitDn?.trim() && (
+                <div className="success-row">
+                  <span className="success-label">
+                    UBICACIÓN EN ACTIVE DIRECTORY (OU)
+                  </span>
+                  <span className="success-value mono">
+                    {createdUser.adOrganizationalUnitDn.trim()}
+                  </span>
+                </div>
+              )}
           </div>
 
           <div className="success-note">
@@ -1500,14 +1561,15 @@ const CreateUserForm = () => {
               isAdminProfileUpdate ? (
                 <>
                   Se actualizarán en Active Directory los datos enviados (nombre, apellidos, puesto,
-                  departamento y ciudad si aplica). La cuenta y la contraseña existentes no cambian por
+                  departamento y sede/ciudad). La cuenta y la contraseña existentes no cambian por
                   esta solicitud.
                 </>
               ) : (
                 <>
-                  La contraseña inicial la define el script de Active Directory en el servidor. La
-                  fila UPN/correo y usuario se actualizan solas cuando el script confirma el éxito,
-                  para mostrar el sAM y UPN finales (pueden diferir de la propuesta del alta).
+                  La contraseña inicial la define el script de Active Directory en el servidor. El
+                  UPN, el correo y el nombre de usuario de la tabla aparecen cuando el script
+                  confirma el éxito en Active Directory (pueden diferir de la propuesta interna del
+                  alta).
                 </>
               )
             ) : (
@@ -1524,15 +1586,23 @@ const CreateUserForm = () => {
                 Resultado en Active Directory
               </h4>
               {!adScriptResult && !adScriptPollExhausted ? (
-                <p className="note" style={{ marginTop: 0 }}>
-                  Consultando si el script del servidor ya procesó la solicitud…
-                </p>
+                <>
+                  <p className="note" style={{ marginTop: 0 }}>
+                    Consultando si el script del servidor ya procesó la solicitud…
+                  </p>
+                  <p className="note" style={{ marginTop: 8, fontSize: 12, opacity: 0.92 }}>
+                    Si pasa de uno o dos minutos sin cambio, en el servidor de Active Directory suele
+                    faltar el script en modo continuo (<code>-Continuous</code>); véase{' '}
+                    <code>docs/server-scripts/README.md</code>.
+                  </p>
+                </>
               ) : null}
               {adScriptPollExhausted && !adScriptResult ? (
                 <div style={{ marginTop: 0 }}>
                   <p className="note">
-                    No hubo respuesta en el tiempo de espera automático (unos 5 minutos). Ejecute el
-                    script en el servidor si aún no lo hizo o pulse «Comprobar estado».
+                    No hubo respuesta en el tiempo de espera automático (unos{' '}
+                    {AD_RESULT_POLL_WINDOW_MINUTES} minutos). Ejecute el script en el servidor con{' '}
+                    <code>-Continuous</code> o una tarea más frecuente, o pulse «Comprobar estado».
                   </p>
                   {adPollLastError ? (
                     <p className="error-text" style={{ marginTop: 10, marginBottom: 0 }}>
@@ -1623,7 +1693,7 @@ const CreateUserForm = () => {
           className={`user-type-tab ${userCreationType === 'operational' ? 'active' : ''}`}
           onClick={() => {
             setUserCreationType('operational');
-            setNextUserName(null);
+            setValidationModalOpen(false);
             setStatus('idle');
             setErrorMessage('');
             setBulkAdminResults(null);
@@ -1644,7 +1714,7 @@ const CreateUserForm = () => {
           className={`user-type-tab ${userCreationType === 'administrative' ? 'active' : ''}`}
           onClick={() => {
             setUserCreationType('administrative');
-            setNextUserName(null);
+            setValidationModalOpen(false);
             setStatus('idle');
             setErrorMessage('');
             setBulkResults(null);
@@ -1716,10 +1786,14 @@ const CreateUserForm = () => {
       <>
       <section className="dark-section">
         <h3 className="section-title">DATOS PERSONALES</h3>
+        <p className="admin-only-fields-note">
+          Los únicos campos opcionales son <strong>segundo nombre</strong> y{' '}
+          <strong>segundo apellido</strong>.
+        </p>
 
         <div className="two-col">
           <div className="field-group">
-            <label>PRIMER NOMBRE *</label>
+            <label>PRIMER NOMBRE{CAMPO_OBLIGATORIO}</label>
             <input
               name="primerNombre"
               value={formData.primerNombre}
@@ -1733,7 +1807,10 @@ const CreateUserForm = () => {
           </div>
 
           <div className="field-group">
-            <label>SEGUNDO NOMBRE</label>
+            <label>
+              SEGUNDO NOMBRE
+              <span className="field-optional-tag"> (opcional)</span>
+            </label>
             <input
               name="segundoNombre"
               value={formData.segundoNombre}
@@ -1749,7 +1826,7 @@ const CreateUserForm = () => {
 
         <div className="two-col">
           <div className="field-group">
-            <label>PRIMER APELLIDO *</label>
+            <label>PRIMER APELLIDO{CAMPO_OBLIGATORIO}</label>
             <input
               name="apellido1"
               value={formData.apellido1}
@@ -1763,7 +1840,10 @@ const CreateUserForm = () => {
           </div>
 
           <div className="field-group">
-            <label>SEGUNDO APELLIDO</label>
+            <label>
+              SEGUNDO APELLIDO
+              <span className="field-optional-tag"> (opcional)</span>
+            </label>
             <input
               name="apellido2"
               value={formData.apellido2}
@@ -1778,11 +1858,11 @@ const CreateUserForm = () => {
       </section>
 
       <section className="dark-section">
-        <h3 className="section-title">PUESTO Y DEPARTAMENTO</h3>
+        <h3 className="section-title">Información del puesto</h3>
 
         <div className="two-col">
           <div className="field-group">
-            <label>PUESTO *</label>
+            <label>PUESTO{CAMPO_OBLIGATORIO}</label>
             <input
               name="puesto"
               value={formData.puesto}
@@ -1796,7 +1876,7 @@ const CreateUserForm = () => {
           </div>
 
           <div className="field-group">
-            <label>DEPARTAMENTO *</label>
+            <label>DEPARTAMENTO{CAMPO_OBLIGATORIO}</label>
             <input
               name="departamento"
               value={formData.departamento}
@@ -1810,56 +1890,98 @@ const CreateUserForm = () => {
         </div>
 
         {userCreationType === 'operational' && (
-          <div className="field-group" style={{ marginTop: 16 }}>
-            <label>SEDE *</label>
-            <select name="sede" value={formData.sede} onChange={handleChange}>
-              <option value="">Seleccione…</option>
-              {OPERATIONAL_SEDE_OPTIONS.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-            {errors.sede && <p className="error-text">{errors.sede}</p>}
-            <p className="note" style={{ marginTop: 8 }}>
-              Clasificación para asignación automática al grupo de Microsoft 365 correspondiente a la
-              sede.
-            </p>
+          <div className="two-col" style={{ marginTop: 16 }}>
+            <div className="field-group">
+              <label htmlFor="op-sede">SEDE{CAMPO_OBLIGATORIO}</label>
+              <select
+                id="op-sede"
+                name="sede"
+                value={formData.sede}
+                onChange={handleChange}
+              >
+                <option value="">Seleccione…</option>
+                {OPERATIONAL_SEDE_OPTIONS.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+              {errors.sede && <p className="error-text">{errors.sede}</p>}
+              <p className="note" style={{ marginTop: 8 }}>
+                Clasificación para asignación automática al grupo de Microsoft 365 correspondiente a la
+                sede.
+              </p>
+            </div>
+            <div className="field-group">
+              <label htmlFor="op-postal">CÓDIGO POSTAL{CAMPO_OBLIGATORIO}</label>
+              <input
+                id="op-postal"
+                name="postalCode"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="postal-code"
+                value={formData.postalCode}
+                onChange={handleChange}
+                maxLength={OPERATIONAL_POSTAL_MAX}
+                placeholder="Solo dígitos"
+              />
+              {errors.postalCode && (
+                <p className="error-text">{errors.postalCode}</p>
+              )}
+              <p className="note" style={{ marginTop: 8 }}>
+                Entre {OPERATIONAL_POSTAL_MIN} y {OPERATIONAL_POSTAL_MAX} dígitos. En carga masiva Excel
+                use la columna «Codigo postal» (o CP, ZIP).
+              </p>
+            </div>
           </div>
         )}
 
       </section>
 
       {userCreationType === 'administrative' && (
-        <section className="dark-section">
-          <h3 className="section-title">CÉDULA / ID, CIUDAD Y CÓDIGO POSTAL</h3>
-          <div className="two-col">
+        <section className="dark-section admin-location-section">
+          <h3 className="section-title">Documento y ubicación</h3>
+          <div className="two-col admin-location-grid">
             <div className="field-group">
-              <label>CÉDULA / ID EMPLEADO *</label>
+              <label htmlFor="admin-cedula">
+                Cédula / ID empleado{CAMPO_OBLIGATORIO}
+              </label>
               <input
+                id="admin-cedula"
                 name="cedula"
                 value={formData.cedula}
                 onChange={handleChange}
                 maxLength={EMPLOYEE_ID_MAX}
                 autoComplete="off"
+                placeholder="Ej. 12345678"
               />
               {errors.cedula && <p className="error-text">{errors.cedula}</p>}
             </div>
-            <div className="field-group">
-              <label>CIUDAD</label>
-              <input
+            <div className="field-group admin-sede-field">
+              <label htmlFor="admin-ciudad-select">
+                Ciudad / sede{CAMPO_OBLIGATORIO}
+              </label>
+              <select
+                id="admin-ciudad-select"
                 name="ciudad"
+                className="admin-sede-select"
                 value={formData.ciudad}
                 onChange={handleChange}
-                maxLength={CITY_MAX}
-                autoComplete="address-level2"
-              />
+              >
+                <option value="">Seleccione una opción…</option>
+                {ADMINISTRATIVE_CITY_SELECT_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
               {errors.ciudad && <p className="error-text">{errors.ciudad}</p>}
             </div>
           </div>
-          <div className="field-group" style={{ marginTop: 16 }}>
-            <label>CÓDIGO POSTAL *</label>
+          <div className="field-group admin-postal-field">
+            <label htmlFor="admin-postal">Código postal{CAMPO_OBLIGATORIO}</label>
             <input
+              id="admin-postal"
               name="postalCode"
               inputMode="numeric"
               pattern="[0-9]*"
@@ -1867,67 +1989,18 @@ const CreateUserForm = () => {
               value={formData.postalCode}
               onChange={handleChange}
               maxLength={OPERATIONAL_POSTAL_MAX}
+              placeholder="Solo dígitos"
             />
             {errors.postalCode && (
               <p className="error-text">{errors.postalCode}</p>
             )}
             <p className="note" style={{ marginTop: 8 }}>
-              Solo números, sin letras; entre {OPERATIONAL_POSTAL_MIN} y {OPERATIONAL_POSTAL_MAX} dígitos.
-              En carga masiva administrativa use la columna «Codigo postal» (o CP, ZIP).
+              Entre {OPERATIONAL_POSTAL_MIN} y {OPERATIONAL_POSTAL_MAX} dígitos. En Excel use la columna «Codigo postal»
+              (o CP, ZIP).
             </p>
           </div>
         </section>
       )}
-
-      {userCreationType === 'operational' && (
-        <section className="dark-section">
-          <h3 className="section-title">CÓDIGO POSTAL</h3>
-          <div className="field-group">
-            <label>CÓDIGO POSTAL *</label>
-            <input
-              name="postalCode"
-              inputMode="numeric"
-              pattern="[0-9]*"
-              autoComplete="postal-code"
-              value={formData.postalCode}
-              onChange={handleChange}
-              maxLength={OPERATIONAL_POSTAL_MAX}
-            />
-            {errors.postalCode && (
-              <p className="error-text">{errors.postalCode}</p>
-            )}
-            <p className="note" style={{ marginTop: 8 }}>
-              Solo números, sin letras; entre {OPERATIONAL_POSTAL_MIN} y {OPERATIONAL_POSTAL_MAX}{' '}
-              dígitos. En carga masiva Excel use la columna «Codigo postal» (o CP, ZIP).
-            </p>
-          </div>
-        </section>
-      )}
-
-      <section className="dark-section preview">
-        <h3 className="section-title">
-          {userCreationType === 'operational'
-            ? 'VISTA PREVIA DE CUENTA M365'
-            : 'VISTA PREVIA DE CUENTA AD (cola SMB)'}
-        </h3>
-
-        <div className="two-col">
-          <div className="field-group">
-            <label>NOMBRE PARA MOSTRAR</label>
-            <div className="preview-box">{userPreview?.displayName || '—'}</div>
-          </div>
-
-          <div className="field-group">
-            <label>USUARIO (con el que quedará guardado)</label>
-            <div className="preview-box">{nextUserName ?? userPreview?.userName ?? '—'}</div>
-            {nextUserNameFetchError ? (
-              <p className="error-text" style={{ marginTop: 8, marginBottom: 0 }}>
-                {nextUserNameFetchError}
-              </p>
-            ) : null}
-          </div>
-        </div>
-      </section>
 
       {userCreationType === 'operational' && (
         <section className="dark-section">
@@ -1961,11 +2034,12 @@ const CreateUserForm = () => {
                 </div>
                 <a
                   className="secondary-btn bulk-upload-template-btn"
-                  href={`${import.meta.env.BASE_URL}plantilla-operarios.xlsx`}
-                  download="plantilla operarios.xlsx"
+                  href={PLANTILLA_OPERARIOS_HREF}
+                  {...plantillaDownloadLinkProps(PLANTILLA_OPERARIOS_HREF, 'plantilla operarios.xlsx')}
                 >
                   Descargar plantilla
                 </a>
+                {plantillaOrigenNote(PLANTILLA_OPERARIOS_HREF, 'operational')}
               </div>
               <details className="bulk-upload-help">
                 <summary>Instrucciones y formato del Excel</summary>
@@ -1980,12 +2054,12 @@ const CreateUserForm = () => {
                   <h4 className="bulk-help-heading">Columnas, obligatoriedad y tipo de dato</h4>
                   <p className="bulk-help-note bulk-help-note--emphasis">
                     Use la <strong>plantilla descargable</strong> para no omitir columnas: el archivo debe
-                    traer <strong>todas las columnas previstas</strong>; en las marcadas como{' '}
-                    <strong>(opcional)</strong> puede dejar la celda <strong>vacía</strong>. En{' '}
-                    <strong>nombres y apellidos</strong> use solo letras (incluye tildes y ñ), espacios y
-                    guiones. En <strong>puesto y departamento</strong> también se permiten números y los
-                    signos <code>. , - / & ( ) +</code>. El <strong>código postal</strong> es solo dígitos;
-                    puede escribirlo como texto en Excel.
+                    traer <strong>todas las columnas previstas</strong>. En alta operativa solo son{' '}
+                    <strong>opcionales</strong> segundo nombre y segundo apellido; el resto es{' '}
+                    <strong>obligatorio</strong>. En <strong>nombres y apellidos</strong> use solo letras
+                    (incluye tildes y ñ), espacios y guiones. En <strong>puesto y departamento</strong>{' '}
+                    también se permiten números y los signos <code>. , - / & ( ) +</code>. El{' '}
+                    <strong>código postal</strong> es solo dígitos; puede escribirlo como texto en Excel.
                   </p>
                   <ul className="bulk-help-list bulk-help-list--columns">
                     <li>
@@ -2092,11 +2166,15 @@ const CreateUserForm = () => {
                 </div>
                 <a
                   className="secondary-btn bulk-upload-template-btn"
-                  href={`${import.meta.env.BASE_URL}plantilla-administrativos.xlsx`}
-                  download="plantilla administrativos.xlsx"
+                  href={PLANTILLA_ADMINISTRATIVOS_HREF}
+                  {...plantillaDownloadLinkProps(
+                    PLANTILLA_ADMINISTRATIVOS_HREF,
+                    'plantilla administrativos.xlsx'
+                  )}
                 >
                   Descargar plantilla
                 </a>
+                {plantillaOrigenNote(PLANTILLA_ADMINISTRATIVOS_HREF, 'administrative')}
               </div>
               <details className="bulk-upload-help">
                 <summary>Instrucciones y formato del Excel</summary>
@@ -2109,11 +2187,11 @@ const CreateUserForm = () => {
 
                   <h4 className="bulk-help-heading">Columnas, obligatoriedad y tipo de dato</h4>
                   <p className="bulk-help-note bulk-help-note--emphasis">
-                    Use la <strong>plantilla descargable</strong> para no omitir columnas: el archivo debe
-                    traer <strong>todas las columnas previstas</strong>; en las marcadas como{' '}
-                    <strong>(opcional)</strong> puede dejar la celda <strong>vacía</strong>. Salvo donde
-                    se indica «solo dígitos», el contenido se interpreta como <strong>texto</strong>{' '}
-                    (incluido documento y código postal, para evitar cambios automáticos de Excel).
+                    Use la <strong>plantilla descargable</strong> para no omitir columnas. En alta
+                    administrativa solo son <strong>opcionales</strong> segundo nombre y segundo apellido; el
+                    resto de columnas de la plantilla es <strong>obligatorio</strong>. Salvo donde se indica
+                    «solo dígitos», el contenido se interpreta como <strong>texto</strong> (incluido documento
+                    y código postal, para evitar cambios automáticos de Excel).
                   </p>
                   <ul className="bulk-help-list bulk-help-list--columns">
                     <li>
@@ -2147,8 +2225,9 @@ const CreateUserForm = () => {
                       <strong>Texto</strong> para no perder ceros a la izquierda.
                     </li>
                     <li>
-                      <strong>Ciudad</strong> <span className="bulk-help-tag">(opcional)</span> · Texto.
-                      Vacía si no desea informarla.
+                      <strong>Ciudad / sede</strong> <span className="bulk-help-tag">(obligatorio)</span> ·
+                      Una de: Segovia, Medellín, Bogotá, PSN, Marmato, Lower Mine. Ese texto es el que quedará en el
+                      atributo <strong>Ciudad</strong> en Active Directory; la OU se asigna automáticamente.
                     </li>
                     <li>
                       <strong>Código postal</strong> <span className="bulk-help-tag">(obligatorio)</span>{' '}
@@ -2191,6 +2270,7 @@ const CreateUserForm = () => {
       )}
 
       <button
+        type="submit"
         className="primary-btn"
         disabled={status === 'loading'}
       >
@@ -2203,6 +2283,42 @@ const CreateUserForm = () => {
 
       {status === 'error' && <p className="error-text">{errorMessage}</p>}
       </>
+      )}
+
+      {validationModalOpen && (
+        <div
+          className="validation-modal-backdrop"
+          role="presentation"
+          onClick={() => setValidationModalOpen(false)}
+        >
+          <div
+            className="validation-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="validation-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="validation-modal-title" className="validation-modal-title">
+              Faltan datos por completar
+            </h2>
+            <p className="validation-modal-lead">
+              Corrija lo indicado a continuación. Los mismos avisos aparecen junto a cada campo en el
+              formulario.
+            </p>
+            <ul className="validation-modal-list">
+              {validationModalLines.map((line, i) => (
+                <li key={i}>{line}</li>
+              ))}
+            </ul>
+            <button
+              type="button"
+              className="primary-btn validation-modal-close"
+              onClick={() => setValidationModalOpen(false)}
+            >
+              Entendido
+            </button>
+          </div>
+        </div>
       )}
     </form>
   );

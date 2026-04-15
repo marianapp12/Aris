@@ -1,5 +1,8 @@
 /**
  * Genera plantilla-operarios.xlsx en frontend/public (ejecutar desde carpeta backend: node scripts/generatePlantillaOperarios.mjs).
+ *
+ * ADVERTENCIA: sobrescribe el .xlsx en `public/`; no ejecutarlo sobre una plantilla corporativa ya maquetada.
+ * Para enlazar una plantilla con estilos use `VITE_PLANTILLA_OPERARIOS_URL` en el frontend.
  */
 import XLSX from 'xlsx';
 import path from 'path';

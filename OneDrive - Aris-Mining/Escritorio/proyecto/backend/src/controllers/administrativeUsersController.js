@@ -59,6 +59,9 @@ export const createUserViaAdQueue = async (req, res) => {
       userPrincipalName: result.userPrincipalName ?? undefined,
       displayName: result.displayName,
       queueAction: result.queueAction ?? 'create',
+      ...(result.adOrganizationalUnitDn
+        ? { adOrganizationalUnitDn: result.adOrganizationalUnitDn }
+        : {}),
     });
   } catch (error) {
     if (error instanceof AdministrativePrecheckError) {
@@ -85,7 +88,12 @@ export const createUserViaAdQueue = async (req, res) => {
     }
 
     const msg = error?.message || String(error);
-    if (msg.includes('Falta la variable de entorno AD_QUEUE_')) {
+    if (
+      msg.includes('Falta la variable de entorno AD_QUEUE_') ||
+      msg.includes('Falta AD_QUEUE_OU_DN') ||
+      msg.includes('Falta DN de contenedor') ||
+      msg.includes('Falta city (sede)')
+    ) {
       return res.status(503).json({
         error: 'Configuración de cola AD incompleta',
         message: msg,
@@ -192,9 +200,10 @@ export const getNextAdministrativeUsername = async (req, res) => {
 
 /**
  * POST /api/users/administrative/bulk
- * Carga masiva: misma plantilla que operativos + Cedula (obligatoria), Codigo postal (obligatorio) y Ciudad (opcional).
+ * Carga masiva: misma plantilla que operativos + Cedula (obligatoria), Codigo postal (obligatorio) y Ciudad (obligatoria: sede del listado).
  * Soporta (1) fila 1 título + fila 2 encabezados + datos desde fila 3, o (2) fila 1 encabezados + datos desde fila 2.
- * Encabezados admiten variantes (espacios, mayúsculas, tildes; sinónimos como Documento → cédula, CP/ZIP → código postal).
+ * Encabezados admiten variantes (espacios, mayúsculas, tildes; sinónimos como Documento → cédula, Sede → ciudad, CP/ZIP → código postal).
+ * La fila de encabezados se detecta automáticamente (p. ej. con fila de título encima o sin ella).
  */
 export const createAdministrativeUsersBulk = async (req, res) => {
   try {
@@ -248,13 +257,14 @@ export const createAdministrativeUsersBulk = async (req, res) => {
         !puesto ||
         !departamento ||
         !cedulaRaw ||
+        !ciudad ||
         !normalizeAdministrativePostalCode(codigoPostalRaw)
       ) {
         results.push({
           row: rowNumber,
           status: 'error',
           message:
-            'Faltan campos obligatorios (PrimerNombre, PrimerApellido, Puesto, Departamento, Cedula, Codigo postal).',
+            'Faltan campos obligatorios (PrimerNombre, PrimerApellido, Puesto, Departamento, Cedula, Ciudad, Codigo postal).',
         });
         continue;
       }
@@ -329,7 +339,7 @@ export const createAdministrativeUsersBulk = async (req, res) => {
         department: departamentoNorm,
         employeeId,
         postalCode: codigoPostalRaw,
-        ...(ciudad ? { city: ciudad } : {}),
+        city: ciudad,
       };
 
       const validation = validateAdministrativePayload(body);
@@ -353,6 +363,9 @@ export const createAdministrativeUsersBulk = async (req, res) => {
           displayName: created.displayName,
           proposedUserName: created.samAccountName,
           queueAction: created.queueAction ?? 'create',
+          ...(created.adOrganizationalUnitDn
+            ? { adOrganizationalUnitDn: created.adOrganizationalUnitDn }
+            : {}),
         });
       } catch (error) {
         if (error instanceof AdministrativePrecheckError) {

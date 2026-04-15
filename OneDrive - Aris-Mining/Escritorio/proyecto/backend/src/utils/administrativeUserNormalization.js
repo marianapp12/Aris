@@ -3,6 +3,7 @@
  */
 
 import { normalizeAdministrativePostalCode } from './administrativeUserValidation.js';
+import { normalizeAdministrativeCityDisplayForAd } from './administrativeCitySite.js';
 
 const WHITESPACE_SPLIT = /\s+/;
 
@@ -40,8 +41,6 @@ export function normalizeAdministrativeBody(body) {
     department: String(body.department || '').trim().toUpperCase(),
     employeeId: String(body.employeeId || '').trim(),
     postalCode: normalizeAdministrativePostalCode(body.postalCode),
-    ...(body.city != null && String(body.city).trim() !== ''
-      ? { city: String(body.city).trim() }
-      : {}),
+    city: normalizeAdministrativeCityDisplayForAd(body.city) || undefined,
   };
 }

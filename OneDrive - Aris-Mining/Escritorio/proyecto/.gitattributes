@@ -1,0 +1,3 @@
+# Evitar que Git normalice finales de línea en binarios Office (corrupción / pérdida de estilos).
+*.xlsx binary
+*.xls binary

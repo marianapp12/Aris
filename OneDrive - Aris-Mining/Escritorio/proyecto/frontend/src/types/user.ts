@@ -10,7 +10,7 @@ export interface CreateUserRequest {
   postalCode?: string;
   /** Cédula / ID empleado (pestaña administrativa, opcional) */
   employeeId?: string;
-  /** Ciudad (pestaña administrativa, opcional) */
+  /** Sede administrativa: nombre en AD (City), p. ej. Bogotá, Medellín; la OU la resuelve el backend. */
   city?: string;
 }
 
@@ -60,6 +60,8 @@ export interface AdQueueCreationAccepted {
   userPrincipalName?: string;
   displayName: string;
   queueAction?: 'create' | 'updateByEmployeeId';
+  /** DN de la OU de destino en AD (ciudad/sede, AD_QUEUE_OU_DN y opcional AD_QUEUE_OU_LEAF_PREFIX). */
+  adOrganizationalUnitDn?: string;
 }
 
 /** GET /users/administrative/queue-connection-test — prueba escritura en AD_QUEUE_UNC. */
@@ -107,11 +109,6 @@ export interface UserFormData {
   /** Código postal operativo: solo números, 4–10 dígitos. */
   postalCode: string;
   cedula: string;
+  /** Administrativo: sede elegida (mismo texto que en AD City); operativo puede quedar vacío. */
   ciudad: string;
-}
-
-export interface UserPreview {
-  displayName: string;
-  userName: string;
-  email: string;
 }

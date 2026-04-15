@@ -18,7 +18,7 @@ proyecto/
 - **Administrativos (Active Directory local)**: Node escribe **`pendiente-{uuid}.json`** en la ruta **`AD_QUEUE_UNC`**; el script **`docs/server-scripts/Process-AdUserQueue.ps1`** (en el servidor) procesa la cola y crea el usuario en AD; **Azure AD Connect** sincroniza hacia Microsoft 365.
 - **Administrativos — cédula / ID**: obligatoria en API y formulario (5–32 caracteres alfanuméricos y guiones). Antes de encolar, el backend consulta **Microsoft Graph** para rechazar **409** si `employeeId` ya existe en el inquilino, y elige **samAccountName/UPN** recorriendo las mismas variantes que en operativos hasta encontrar un correo libre. **`AD_QUEUE_SKIP_GRAPH_PRECHECK=true`** desactiva ese prechequeo (solo pruebas; no recomendado en producción).
 - **Validación en AD**: el script en servidor comprueba `samAccountName` y **EmployeeID** duplicados antes de `New-ADUser`. Usuarios solo on‑prem aún no sincronizados pueden no aparecer en Graph hasta que AADC ejecute un ciclo.
-- **Vista previa de usuario administrativo**: **`GET /api/users/administrative/next-username`** usa Graph (salvo `AD_QUEUE_SKIP_GRAPH_PRECHECK`) para devolver el primer **mailNickname/UPN** libre coherente con la lógica de operativos.
+- **Nombre de usuario administrativo (LDAP/Graph)**: **`GET /api/users/administrative/next-username`** usa Graph (salvo `AD_QUEUE_SKIP_GRAPH_PRECHECK`) para devolver el primer **mailNickname/UPN** libre coherente con la lógica de operativos.
 - **Creación administrativa encolada**: **`POST /api/users`** (y el alias **`POST /api/users/administrative`**) responden **202** con `requestId`, ruta del archivo y datos propuestos; no hay polling de trabajos en el backend.
 - **Front-end**: pestañas **Operativo (Microsoft 365)** y **Administrativo (Active Directory)**; carga masiva Excel para operativos (Graph) y para administrativos (cola AD).
 
@@ -86,7 +86,7 @@ cd frontend
 npm install
 ```
 
-Crear `frontend/.env` según `frontend/.env.example` (API, Entra ID para el login SPA, y **`VITE_AD_UPN_SUFFIX`** alineado con **`AD_QUEUE_EMAIL_DOMAIN`** del backend, p. ej. `empresa.co`, para la vista previa de UPN en la pestaña administrativa).
+Crear `frontend/.env` según `frontend/.env.example` (API y Entra ID para el login SPA). Opcionalmente defina **`VITE_PLANTILLA_OPERARIOS_URL`** y **`VITE_PLANTILLA_ADMINISTRATIVOS_URL`** como URL **https** absolutas (p. ej. enlace de descarga en SharePoint) para que el botón «Descargar plantilla» no use solo los `.xlsx` de `frontend/public/` (útil si la plantilla corporativa lleva estilos o validaciones).
 
 **`VITE_API_BASE_URL` (importante):** las rutas del servidor son `/api/users/...`. Usa una de estas opciones:
 
@@ -94,6 +94,25 @@ Crear `frontend/.env` según `frontend/.env.example` (API, Entra ID para el logi
 - Solo proxy de Vite (app en `http://localhost:3000`): `VITE_API_BASE_URL=/api`
 
 Si pones solo `http://localhost:5000` sin `/api`, el cliente intenta corregirlo automáticamente añadiendo `/api`; aun así se recomienda dejar la URL explícita en `.env` para evitar confusiones.
+
+### Plantillas Excel (estilos y dónde guardarlas)
+
+- El script **`backend/scripts/generatePlantillaAdministrativos.mjs`** vuelve a escribir `plantilla-administrativos.xlsx` **sin formato rico de Excel**; no lo ejecute sobre una plantilla ya maquetada en la misma ruta.
+- Si el repo está en **OneDrive**, al editar el `.xlsx` en Excel y guardar en la carpeta del proyecto pueden aparecer **conflictos de sincronización** o sensación de que «al reiniciar» se pierden estilos; conviene plantilla definitiva en **SharePoint** (y `VITE_PLANTILLA_*_URL`) o carpeta **fuera** de OneDrive y luego copiar al repo.
+- En la raíz del repo, **`.gitattributes`** marca `*.xlsx` como **binary** para que Git no toque finales de línea y no dañe el archivo.
+
+#### Qué debe hacer el equipo (plantilla fija con diseño en SharePoint)
+
+1. Crear o subir el **Excel maquetado** (colores, validaciones, etc.) a una **biblioteca de documentos** en SharePoint (o sitio de Teams).
+2. Generar un **vínculo de acceso** al archivo (idealmente solo personas de la organización, según política).
+3. Copiar la URL completa; debe empezar por **`https://`**.
+4. En **`frontend/.env`** (y en las variables de entorno del **build de producción**), definir una o ambas:
+   - `VITE_PLANTILLA_OPERARIOS_URL=https://.../plantilla-operarios.xlsx`
+   - `VITE_PLANTILLA_ADMINISTRATIVOS_URL=https://.../plantilla-administrativos.xlsx`
+5. **Reiniciar** el servidor de desarrollo (`npm run dev` en `frontend`) o **volver a construir y publicar** el sitio para que Vite inyecte las variables.
+6. Comprobar el botón **Descargar plantilla** en la app: debe abrir el enlace (nueva pestaña). Los usuarios deben usar en Excel (web o aplicación) **Archivo → Guardar como → Descargar una copia** (o **Crear una copia** / **Descargar**, según la pantalla), trabajar en esa copia local y subirla con **Elegir archivo**; así no sobrescriben la plantilla maestra en SharePoint. La app **no modifica** el archivo en la nube.
+
+Si no se definen esas variables, la app sigue usando los archivos por defecto en **`frontend/public/plantilla-*.xlsx`**.
 
 ## Ejecución
 
@@ -245,14 +264,15 @@ Comprueba que el proceso Node pueda **escribir y borrar** un archivo temporal en
 
 Carga masiva de usuarios administrativos con el mismo patrón Excel que operativos (**`multipart/form-data`**, campo **`file`**, `.xlsx` / `.xls`).
 
-**Plantilla:** admite dos formatos; el backend elige automáticamente el que mejor encaje: (A) fila 1 título, fila 2 encabezados, datos desde fila 3; o (B) fila 1 encabezados y datos desde fila 2. Los nombres de columna pueden llevar espacios o tildes; se aceptan sinónimos como `Documento` / `NumeroCedula` para la cédula. Columnas:
+**Plantilla:** el backend **detecta la fila de encabezados** entre las primeras filas (con o sin fila de título arriba) y acepta sinónimos (`Documento` → cédula, `Sede` → ciudad, CP/ZIP → código postal, etc.). Los nombres de columna pueden llevar espacios o tildes. Columnas:
 
 | Columna | Obligatoria | Notas |
 | --- | --- | --- |
 | `PrimerNombre`, `SegundoNombre`, `PrimerApellido`, `SegundoApellido` | Sí (segundo nombre/apellido pueden ir vacíos según reglas del formulario) | Misma normalización que el alta individual |
 | `Puesto`, `Departamento` | Sí | |
 | `Cedula` o `Cédula` | Sí | Se mapea a `employeeId`; no puede repetirse dentro del mismo archivo |
-| `Ciudad` | No | |
+| `Ciudad` / `Sede` | Sí | Sede administrativa del listado; sinónimos en el parser (ver backend) |
+| `Codigo postal` | Sí | Solo dígitos (reglas alineadas al formulario) |
 
 Por cada fila válida se aplica la misma lógica que **`POST /api/users/administrative`**: validación, prechequeo en **Microsoft Graph** (salvo `AD_QUEUE_SKIP_GRAPH_PRECHECK`) y escritura de **`pendiente-{requestId}.json`** en **`AD_QUEUE_UNC`**. Las filas con error aparecen en `results` sin encolar.
 

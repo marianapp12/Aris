@@ -255,32 +255,6 @@ export const getNextAdministrativeUsername = async (params: {
   }
 };
 
-/** Propuesta de `userName` para operativos M365 (Graph / backend). */
-export const getNextAvailableUsername = async (params: {
-  givenName: string;
-  surname1: string;
-  surname2?: string;
-}): Promise<NextUsernameResponse> => {
-  const searchParams = new URLSearchParams({
-    givenName: params.givenName,
-    surname1: params.surname1,
-  });
-  if (params.surname2) searchParams.set('surname2', params.surname2);
-  try {
-    const response = await apiClient.get<NextUsernameResponse>(
-      `/users/next-username?${searchParams.toString()}`
-    );
-    return response.data;
-  } catch (error) {
-    throw new Error(
-      getAxiosErrorMessage(
-        error,
-        'No se pudo obtener el nombre de usuario propuesto (operativo).'
-      )
-    );
-  }
-};
-
 /** Respuesta 201 de carga masiva operativa o administrativa. */
 export interface BulkUploadApiResponse {
   message?: string;
@@ -311,7 +285,7 @@ export const uploadBulkUsers = async (file: File): Promise<BulkUploadApiResponse
   }
 };
 
-/** Carga masiva administrativa (cola AD / SMB). Misma plantilla que operativos + Cedula y opcional Ciudad. */
+/** Carga masiva administrativa (cola AD / SMB). Plantilla: Cedula, Ciudad (nombre en AD), Codigo postal, etc. */
 export const uploadAdministrativeBulkUsers = async (
   file: File
 ): Promise<BulkUploadApiResponse> => {

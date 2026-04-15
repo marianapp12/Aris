@@ -17,6 +17,10 @@ import { assertEmployeeIdNotTakenInActiveDirectoryLdap } from './adLdapEmployeeI
 import { assertNoPendingQueueFileWithEmployeeId } from './adQueuePendingEmployeeIdScan.js';
 import { assertEmployeeIdNotInProcessedRecords } from './adQueueProcessedEmployeeIdScan.js';
 import { normalizeAdministrativePostalCode } from '../utils/administrativeUserValidation.js';
+import {
+  buildAdministrativeOuDn,
+  mapAdministrativeCityInputToBucket,
+} from '../utils/administrativeCitySite.js';
 
 function joinQueuePath(queueUnc, fileName) {
   const normalized = queueUnc.replace(/[/\\]+$/g, '');
@@ -51,6 +55,35 @@ function firstSamCandidate(givenName, surname1, surname2) {
 function getAdQueueConnectionTestTimeoutMs() {
   const n = Number(process.env.AD_QUEUE_CONNECTION_TEST_TIMEOUT_MS);
   return Number.isFinite(n) && n >= 1000 && n <= 120000 ? Math.floor(n) : 8000;
+}
+
+/**
+ * Añade queueMetadata.ouDn (OU hoja + contenedor; ver AD_QUEUE_OU_LEAF_PREFIX en administrativeCitySite.js) y contraseña opcional.
+ * @param {object} payload - objeto JSON de cola (`city` = nombre legible en AD; la OU usa el bucket derivado de la ciudad)
+ * @param {{ ouDn?: string, initialPasswordHint?: string }} config
+ */
+function setAdministrativeQueueMetadata(payload, config) {
+  const parentDn = config.ouDn?.trim();
+  if (!parentDn) {
+    throw new Error(
+      'Falta AD_QUEUE_OU_DN: defina el DN del contenedor LDAP bajo el cual cuelgan las OU por sede (y opcionalmente AD_QUEUE_OU_LEAF_PREFIX para nombres tipo Usuarios-Office365Sync-Medellin).'
+    );
+  }
+  const cityRaw = String(payload.city || '').trim();
+  if (!cityRaw) {
+    throw new Error('Falta city (sede) para resolver la OU en la cola administrativa.');
+  }
+  const siteBucket = mapAdministrativeCityInputToBucket(cityRaw);
+  if (!siteBucket) {
+    throw new Error(
+      'Ciudad / sede no válida para la cola administrativa. Use Segovia, Medellín, Bogotá, PSN, Marmato o Lower Mine (o bucket Medellin/Marmato/Segovia; compat. Overmain/Overmine → Segovia).'
+    );
+  }
+  const meta = {
+    ouDn: buildAdministrativeOuDn(siteBucket, parentDn),
+  };
+  if (config.initialPasswordHint) meta.initialPasswordFromQueue = config.initialPasswordHint;
+  payload.queueMetadata = meta;
 }
 
 function mapWriteError(err) {
@@ -171,6 +204,9 @@ export async function enqueueAdUserUpdateByEmployeeIdRequest(body, graphHint = {
     postalCode: normalizeAdministrativePostalCode(body.postalCode),
   };
 
+  setAdministrativeQueueMetadata(payload, config);
+  const adOrganizationalUnitDn = payload.queueMetadata?.ouDn;
+
   const targetPath = joinQueuePath(config.uncPath, `pendiente-${requestId}.json`);
   const json = `${JSON.stringify(payload, null, 2)}\n`;
 
@@ -187,6 +223,7 @@ export async function enqueueAdUserUpdateByEmployeeIdRequest(body, graphHint = {
     employeeId,
     queueAction: 'updateByEmployeeId',
     userPrincipalName: graphHint.userPrincipalName,
+    ...(adOrganizationalUnitDn ? { adOrganizationalUnitDn } : {}),
   };
 }
 
@@ -286,12 +323,8 @@ export async function enqueueAdUserRequest(body) {
     postalCode: normalizeAdministrativePostalCode(body.postalCode),
   };
 
-  const meta = {};
-  if (config.ouDn) meta.ouDn = config.ouDn;
-  if (config.initialPasswordHint) meta.initialPasswordFromQueue = config.initialPasswordHint;
-  if (Object.keys(meta).length > 0) {
-    payload.queueMetadata = meta;
-  }
+  setAdministrativeQueueMetadata(payload, config);
+  const adOrganizationalUnitDn = payload.queueMetadata?.ouDn;
 
   const targetPath = joinQueuePath(config.uncPath, `pendiente-${requestId}.json`);
   const json = `${JSON.stringify(payload, null, 2)}\n`;
@@ -312,6 +345,7 @@ export async function enqueueAdUserRequest(body) {
     displayName,
     email,
     queueAction: 'create',
+    ...(adOrganizationalUnitDn ? { adOrganizationalUnitDn } : {}),
   };
 }
 

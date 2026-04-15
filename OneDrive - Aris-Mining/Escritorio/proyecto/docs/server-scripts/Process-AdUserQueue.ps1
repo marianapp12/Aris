@@ -1,4 +1,7 @@
 #Requires -Modules ActiveDirectory
+# NOTA EDITOR: Si VS Code/Cursor marca error en la línea #Requires (módulo ActiveDirectory),
+# instale "RSAT: Active Directory module" en Windows o el rol AD DS en el servidor de dominio.
+# El script es sintácticamente válido; el analizador no carga módulos del sistema.
 <#
 .SYNOPSIS
   Procesa pendiente-*.json y crea o actualiza usuarios en Active Directory.
@@ -14,11 +17,29 @@
   New-ADUser -Name usa el sAM resuelto (CN único en la OU); DisplayName sigue siendo el nombre completo legible, así dos
   homónimos con distinta cédula no chocan por CN duplicado.
 
+  OU por sede (backend Node): AD_QUEUE_OU_DN + opcional AD_QUEUE_OU_LEAF_PREFIX. Sin prefijo: OU=Medellin|Marmato|Segovia.
+  Con prefijo Usuarios-Office365Sync: OU=Usuarios-Office365Sync-Medellin (etc.),<contenedor>. El JSON trae queueMetadata.ouDn
+  completo y city = nombre legible en AD (p. ej. Bogotá, Medellín, Lower Mine).
+
 .ESTRUCTURA RECOMENDADA (hermanas bajo la misma raíz, p. ej. C:\scripts o \\srv\scripts):
   pending\      ← QueuePath (este script lee solo aquí)
   procesados\   ← JSON por cédula tras alta exitosa (procesado-employeeId-*.json)
   error\        ← JSON fallidos movidos desde pending
   resultados\   ← resultado-{requestId}.json (status, samAccountName, userPrincipalName, email) para polling del backend/front
+
+  Modo continuo (-Continuous): bucle indefinido que revisa la cola cuando está vacía (por defecto cada 300 ms vía
+  -IdleSleepMilliseconds); recomendado con una sola tarea programada «Al iniciar el sistema» en lugar de repetir la tarea cada varios minutos.
+
+.PARAMETER Continuous
+  Si está presente, el script no termina tras una pasada: vuelve a buscar pendiente-*.json tras procesar o, si no hay
+  archivos, espera -IdleSleepMilliseconds (o -IdleSleepSeconds si ms=0) y reintenta.
+
+.PARAMETER IdleSleepMilliseconds
+  Espera en milisegundos cuando la cola está vacía (solo con -Continuous). Por defecto 300 (~3 comprobaciones/s).
+  Si es 0, se usa -IdleSleepSeconds en su lugar.
+
+.PARAMETER IdleSleepSeconds
+  Segundos de espera cuando la cola está vacía y -IdleSleepMilliseconds es 0 (solo con -Continuous). Por defecto 1.
 
 .PARAMETER ScriptsRoot
   Raíz explícita (ej. C:\scripts). Si está vacío, se usa el padre de QueuePath vía [System.IO.Path]::GetDirectoryName (más robusto que Split-Path en muchos casos).
@@ -32,19 +53,26 @@
   {"cedula":"1234567890","nombreCompleto":"Juan Pérez","fechaCreacion":"2026-04-01T12:00:00.000Z","estado":"creado_en_ad","requestId":"...","samAccountName":"jperez"}
 #>
 # Parámetros: QueuePath = carpeta con pendiente-*.json; ScriptsRoot = raíz de hermanas (si vacío, padre de QueuePath);
-# *Subfolder = nombres relativos bajo ScriptsRoot; OrganizationalUnit = OU por defecto; DefaultCompany = compañía si no viene en el JSON.
+# OrganizationalUnit = OU por defecto si el JSON no trae queueMetadata.ouDn (alinear con queueMetadata.ouDn que envía Node).
+# *Subfolder = nombres relativos bajo ScriptsRoot; DefaultCompany = compañía si no viene en el JSON.
 param(
     [string]$QueuePath          = 'C:\scripts\pending',
     [string]$ScriptsRoot        = '',
-    [string]$OrganizationalUnit = 'OU=Administrativos,DC=prueba,DC=local',
+    [string]$OrganizationalUnit = 'OU=Usuarios-Office365Sync-Marmato,OU=Usuarios,DC=prueba,DC=local',
     [string]$ErrorSubfolder     = 'error',
     [string]$ResultsSubfolder   = 'resultados',
     [string]$ProcessedSubfolder = 'procesados',
-    [string]$DefaultCompany     = ''
+    [string]$DefaultCompany     = '',
+    [switch]$Continuous,
+    [ValidateRange(0, 10000)]
+    [int]$IdleSleepMilliseconds = 300,
+    [ValidateRange(0, 120)]
+    [int]$IdleSleepSeconds      = 1
 )
 
 # Flujo resumido: lee pendiente-*.json en QueuePath → crea/actualiza usuario en AD → escribe resultados y procesados
 # → borra o mueve el JSON. Los errores generan resultado-*.json (status error) y mueven el archivo a la carpeta error.
+# Con -Continuous: repite el ciclo (latencia baja frente a tareas programadas cada varios minutos).
 
 Import-Module ActiveDirectory
 $ErrorActionPreference = 'Stop'
@@ -342,14 +370,54 @@ foreach ($dirSpec in @(
     }
 }
 
-# ── Procesar archivos ─────────────────────────────────────────────────────────
+# ── Procesar archivos (una pasada o bucle continuo con -Continuous) ───────────
 # Solo archivos que coincidan con el patrón del backend al encolar (pendiente-{requestId}.json).
-$files = @(Get-ChildItem -LiteralPath $QueuePath -Filter 'pendiente-*.json' -File -ErrorAction SilentlyContinue)
-
-if ($files.Count -eq 0) {
-    Write-QueueLog "No hay archivos pendientes en $QueuePath"
-    exit 0
+# Espera en cola vacía (copias locales; no reasignar parámetros del param()).
+$effectiveIdleMs = $IdleSleepMilliseconds
+$effectiveIdleSec = $IdleSleepSeconds
+if ($Continuous) {
+    if ($effectiveIdleMs -le 0 -and $effectiveIdleSec -le 0) {
+        Write-QueueLog "Modo continuo: defina -IdleSleepMilliseconds (>0) o -IdleSleepSeconds (>0); usando 300 ms." "WARN"
+        $effectiveIdleMs = 300
+    }
+    if ($effectiveIdleMs -gt 0) {
+        $idleDescLog = "$effectiveIdleMs ms"
+    } else {
+        $idleDescLog = "$effectiveIdleSec s"
+    }
+    Write-QueueLog "Modo continuo activo (espera si cola vacía: $idleDescLog). Ctrl+C para detener."
 }
+
+$idleCycles = 0
+while ($true) {
+    $files = @(Get-ChildItem -LiteralPath $QueuePath -Filter 'pendiente-*.json' -File -ErrorAction SilentlyContinue)
+
+    if ($files.Count -eq 0) {
+        if (-not $Continuous) {
+            Write-QueueLog "No hay archivos pendientes en $QueuePath"
+            exit 0
+        }
+        $idleCycles++
+        # Evita llenar el log: primera vez + cada ~60 ciclos (con 300 ms ≈ 18 s de silencio en log).
+        if ($idleCycles -eq 1 -or ($idleCycles % 60) -eq 0) {
+            if ($effectiveIdleMs -gt 0) {
+                $idleDesc = "$effectiveIdleMs ms"
+            } else {
+                $idleDesc = "$effectiveIdleSec s"
+            }
+            Write-QueueLog "Cola vacía en $QueuePath (ciclo inactivo #$idleCycles; siguiente revisión en $idleDesc)."
+        }
+        if ($effectiveIdleMs -gt 0) {
+            Start-Sleep -Milliseconds $effectiveIdleMs
+        } else {
+            Start-Sleep -Seconds $effectiveIdleSec
+        }
+        continue
+    }
+
+    $idleCycles = 0
+
+    Write-QueueLog "Archivos en cola: $($files.Count)"
 
 foreach ($f in $files) {
     Write-QueueLog "Procesando: $($f.Name)"
@@ -588,6 +656,12 @@ foreach ($f in $files) {
             Write-QueueLog "No se pudo mover '$($f.Name)' a error: $($_.Exception.Message)" "ERROR"
         }
     }
+}
+
+    if (-not $Continuous) {
+        break
+    }
+    # Siguiente vuelta del bucle: recoge nuevos pendiente-*.json que hayan llegado mientras se procesaba.
 }
 
 Write-QueueLog "Procesamiento finalizado."

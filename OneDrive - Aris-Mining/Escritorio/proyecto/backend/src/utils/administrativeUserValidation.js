@@ -1,3 +1,8 @@
+import {
+  mapAdministrativeCityInputToBucket,
+  ADMINISTRATIVE_CITY_DISPLAY_LABELS,
+} from './administrativeCitySite.js';
+
 const onlyLettersRegex = /[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s-]/;
 const hasInvalidCharsForName = (value) => value && onlyLettersRegex.test(value);
 /** Cédula / ID: alfanumérico y guion, 5–32 caracteres (obligatorio en flujo administrativo). */
@@ -6,7 +11,6 @@ export const EMPLOYEE_ID_MAX_LENGTH = 32;
 const employeeIdRegex = new RegExp(
   `^[0-9A-Za-z-]{${EMPLOYEE_ID_MIN_LENGTH},${EMPLOYEE_ID_MAX_LENGTH}}$`
 );
-const cityRegex = /^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ0-9\s.,-]{0,60}$/;
 
 /** Alineado con flujo operativo M365 (código postal). */
 export const ADMIN_POSTAL_MIN = 4;
@@ -132,24 +136,22 @@ export function validateAdministrativePayload(body) {
     };
   }
 
-  if (city != null && String(city).trim() !== '') {
-    const c = String(city).trim();
-    if (c.length > 60) {
-      return {
-        ok: false,
-        status: 400,
-        error: 'Validación fallida',
-        message: 'Ciudad no puede exceder 60 caracteres',
-      };
-    }
-    if (!cityRegex.test(c)) {
-      return {
-        ok: false,
-        status: 400,
-        error: 'Validación fallida',
-        message: 'Ciudad con caracteres no permitidos',
-      };
-    }
+  const cityTrimmed = city != null ? String(city).trim() : '';
+  if (!cityTrimmed) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Validación fallida',
+      message: 'La ciudad (sede) es obligatoria.',
+    };
+  }
+  if (!mapAdministrativeCityInputToBucket(cityTrimmed)) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Validación fallida',
+      message: `Ciudad / sede no válida. Use una de: ${ADMINISTRATIVE_CITY_DISPLAY_LABELS.join(', ')} (preferido en AD). También se aceptan Medellin, Marmato, Segovia para compatibilidad.`,
+    };
   }
 
   return { ok: true };

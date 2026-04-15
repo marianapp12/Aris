@@ -5,8 +5,10 @@ interface ImportMetaEnv {
   readonly VITE_AZURE_TENANT_ID?: string;
   readonly VITE_AZURE_CLIENT_ID?: string;
   readonly VITE_AZURE_LOGI_GROUP_ID?: string;
-  /** Sufijo UPN para vista previa de cuentas AD (debe coincidir con AD_UPN_SUFFIX del backend). */
-  readonly VITE_AD_UPN_SUFFIX?: string;
+  /** URL absoluta https de plantilla operativos (SharePoint, etc.); vacío = `public/plantilla-operarios.xlsx`. */
+  readonly VITE_PLANTILLA_OPERARIOS_URL?: string;
+  /** URL absoluta https de plantilla administrativos; vacío = `public/plantilla-administrativos.xlsx`. */
+  readonly VITE_PLANTILLA_ADMINISTRATIVOS_URL?: string;
 }
 
 interface ImportMeta {
