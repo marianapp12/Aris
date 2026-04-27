@@ -30,6 +30,10 @@
   Modo continuo (-Continuous): bucle indefinido que revisa la cola cuando está vacía (por defecto cada 300 ms vía
   -IdleSleepMilliseconds); recomendado con una sola tarea programada «Al iniciar el sistema» en lugar de repetir la tarea cada varios minutos.
 
+  Concurrencia (UNC, backend Node, -Continuous): cada archivo se renombra en la misma carpeta de pendiente-*.json a
+  procesando-*.json antes de leerlo (reclamo casi atómico), para reducir carreras donde el archivo «desaparece» entre
+  el listado y el Get-Content. No ejecute dos instancias del script sobre la misma cola.
+
 .PARAMETER Continuous
   Si está presente, el script no termina tras una pasada: vuelve a buscar pendiente-*.json tras procesar o, si no hay
   archivos, espera -IdleSleepMilliseconds (o -IdleSleepSeconds si ms=0) y reintenta.
@@ -246,6 +250,7 @@ function Get-RequestIdFromPendienteFile {
   Lo lee el backend (GET .../queue-requests/:id/result) y el front hace polling.
   Campos clave:
   - status: success | error (pending = archivo aún no existe)
+  - displayName: nombre para mostrar final en AD (create y updateByEmployeeId)
   - samAccountName / userPrincipalName / email: valores finales en AD tras crear o actualizar
     (el JSON pendiente puede traer otra propuesta; el script resuelve colisiones de sAM/UPN)
 #>
@@ -259,7 +264,8 @@ function Write-AdQueueResultFile {
         [string]$QueueAction = '',
         [string]$SamAccountName = '',
         [string]$UserPrincipalName = '',
-        [string]$EmailAddress = ''
+        [string]$EmailAddress = '',
+        [string]$DisplayName = ''
     )
     if ([string]::IsNullOrWhiteSpace($RequestId)) { return }
     if (-not (Test-Path -LiteralPath $ResultsDir)) {
@@ -282,6 +288,7 @@ function Write-AdQueueResultFile {
     if ($UserPrincipalName) { $obj['userPrincipalName'] = $UserPrincipalName.Trim() }
     # Correo principal en AD (proxyAddresses/mail); suele coincidir con UPN si no hay alias distinto
     if ($EmailAddress) { $obj['email'] = $EmailAddress.Trim().ToLowerInvariant() }
+    if ($DisplayName) { $obj['displayName'] = $DisplayName.Trim() }
     $outPath = Join-Path $ResultsDir "resultado-$RequestId.json"
     try {
         $json = ($obj | ConvertTo-Json -Depth 5 -Compress) + "`n"
@@ -423,10 +430,25 @@ foreach ($f in $files) {
     Write-QueueLog "Procesando: $($f.Name)"
     $item = $null
     $requestId = $null
+    $claimPath = $null
+
+    if ($f.Name -notmatch '^pendiente-') { continue }
+    $claimName = $f.Name -replace '^pendiente-', 'procesando-'
+    $claimPath = Join-Path -Path $f.DirectoryName -ChildPath $claimName
+    if (Test-Path -LiteralPath $claimPath) {
+        Write-QueueLog "Eliminando archivo de trabajo huérfano previo: $claimName" "WARN"
+        Remove-Item -LiteralPath $claimPath -Force -ErrorAction SilentlyContinue
+    }
+    try {
+        Rename-Item -LiteralPath $f.FullName -NewName $claimName -ErrorAction Stop
+    } catch {
+        Write-QueueLog "Omitido (otro proceso, archivo ya movido o red): $($f.Name) — $($_.Exception.Message)" "WARN"
+        continue
+    }
 
     try {
         # Cada archivo es un único objeto JSON (campos en español alineados con el backend de cola AD).
-        $item = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+        $item = Get-Content -LiteralPath $claimPath -Raw -Encoding UTF8 | ConvertFrom-Json
 
         if ($item.requestId -and $item.requestId.ToString().Trim()) {
             $requestId = $item.requestId.ToString().Trim()
@@ -494,8 +516,9 @@ foreach ($f in $files) {
                 -Message "Usuario actualizado en Active Directory." -QueueAction $queueAction `
                 -SamAccountName ([string]$adUser.SamAccountName) `
                 -UserPrincipalName $upnFinal `
-                -EmailAddress $mailFinal
-            Remove-Item -LiteralPath $f.FullName -Force
+                -EmailAddress $mailFinal `
+                -DisplayName $displayName
+            Remove-Item -LiteralPath $claimPath -Force
             Write-QueueLog "Usuario actualizado OK: $($adUser.SamAccountName)"
             continue
         }
@@ -621,11 +644,11 @@ foreach ($f in $files) {
             Write-QueueLog "CRÍTICO: Usuario '$sam' creado en AD pero no se pudo confirmar el archivo en procesados para cédula $empId. Revise permisos y disco." "ERROR"
         }
 
-        # Incluir UPN y correo definitivos (pueden diferir del pendiente-*.json si hubo colisión de sAM)
+        # Incluir nombre para mostrar, UPN y correo definitivos (pueden diferir del pendiente-*.json si hubo colisión de sAM)
         Write-AdQueueResultFile -ResultsDir $resultsDir -RequestId $requestId -Status success `
             -Message "Usuario creado en Active Directory." -QueueAction $queueAction -SamAccountName $sam `
-            -UserPrincipalName $upn -EmailAddress $mail
-        Remove-Item -LiteralPath $f.FullName -Force
+            -UserPrincipalName $upn -EmailAddress $mail -DisplayName $displayName
+        Remove-Item -LiteralPath $claimPath -Force
         Write-QueueLog "Usuario creado OK: $sam"
 
     } catch {
@@ -646,11 +669,12 @@ foreach ($f in $files) {
                 New-Item -ItemType Directory -Path $errDir -Force | Out-Null
             }
             $dest = Join-Path $errDir $f.Name
-            if (Test-Path -LiteralPath $f.FullName) {
-                Move-Item -LiteralPath $f.FullName -Destination $dest -Force
+            $sourceForError = if ($claimPath -and (Test-Path -LiteralPath $claimPath)) { $claimPath } elseif (Test-Path -LiteralPath $f.FullName) { $f.FullName } else { $null }
+            if ($sourceForError) {
+                Move-Item -LiteralPath $sourceForError -Destination $dest -Force
                 Write-QueueLog "Archivo movido a error: $dest"
             } else {
-                Write-QueueLog "El archivo ya no existe en cola, no se puede mover: $($f.FullName)" "WARN"
+                Write-QueueLog "El archivo ya no existe en cola (ni pendiente ni procesando), no se puede mover: $($f.Name)" "WARN"
             }
         } catch {
             Write-QueueLog "No se pudo mover '$($f.Name)' a error: $($_.Exception.Message)" "ERROR"

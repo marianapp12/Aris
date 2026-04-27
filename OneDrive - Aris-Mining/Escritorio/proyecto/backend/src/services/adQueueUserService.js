@@ -21,6 +21,7 @@ import {
   buildAdministrativeOuDn,
   mapAdministrativeCityInputToBucket,
 } from '../utils/administrativeCitySite.js';
+import { formatPrecheckOrMixedFailureDetail } from '../utils/adQueueErrorSanitize.js';
 
 function joinQueuePath(queueUnc, fileName) {
   const normalized = queueUnc.replace(/[/\\]+$/g, '');
@@ -86,25 +87,81 @@ function setAdministrativeQueueMetadata(payload, config) {
   payload.queueMetadata = meta;
 }
 
+/**
+ * Convierte errores de fs/red/Windows al escribir en la UNC de cola en mensajes estables para API y UI.
+ * En caso genérico adjunta `cause` para que el controlador pueda registrar el error original en consola.
+ */
 function mapWriteError(err) {
-  const code = err?.code;
-  if (code === 'ETIMEOUT') {
-    return err instanceof Error
-      ? err
-      : new Error('Tiempo de espera agotado al acceder a la carpeta de cola. Compruebe red, UNC y permisos SMB.');
+  if (err == null) {
+    return new Error('No se pudo escribir en la cola AD: error desconocido.');
   }
-  if (code === 'ENOENT' || code === 'ENOTDIR') {
+
+  const code = err.code;
+  const msg = String(err.message || err || '').toLowerCase();
+
+  const winPathMissing =
+    msg.includes('no se encuentra la ruta') ||
+    msg.includes('porque no existe') ||
+    msg.includes('sistema no puede encontrar el archivo') ||
+    msg.includes('cannot find the path') ||
+    msg.includes('the system cannot find the path') ||
+    msg.includes('the system cannot find the file specified');
+
+  if (code === 'ENOENT' || code === 'ENOTDIR' || winPathMissing) {
     return new Error(
-      'No se pudo escribir en la cola AD: la ruta no existe o no es accesible. Compruebe AD_QUEUE_UNC y permisos SMB.'
+      'No se pudo escribir en la cola AD: la carpeta o el recurso de red no están disponibles, o AD_QUEUE_UNC no coincide con la carpeta «pending». Compruebe la UNC, que exista la carpeta y permisos SMB para la cuenta que ejecuta Node.'
     );
   }
-  if (code === 'EACCES' || code === 'EPERM') {
-    return new Error('No se pudo escribir en la cola AD: permiso denegado en el recurso compartido.');
+
+  if (code === 'ETIMEOUT' || code === 'ETIMEDOUT') {
+    return new Error(
+      'Tiempo de espera agotado al acceder a la carpeta de cola. Compruebe red, UNC AD_QUEUE_UNC y permisos SMB.'
+    );
   }
+
+  if (code === 'EACCES' || code === 'EPERM' || code === 'EBUSY') {
+    return new Error(
+      'No se pudo escribir en la cola AD: permiso denegado o recurso en uso en el recurso compartido.'
+    );
+  }
+
   if (code === 'ENOSPC') {
     return new Error('No se pudo escribir en la cola AD: espacio insuficiente en el destino.');
   }
-  return err;
+
+  if (
+    code === 'ECONNRESET' ||
+    code === 'ENOTCONN' ||
+    code === 'EPIPE' ||
+    code === 'EHOSTUNREACH' ||
+    code === 'ENETUNREACH' ||
+    code === 'ECONNREFUSED' ||
+    code === 'UNKNOWN'
+  ) {
+    return new Error(
+      'No se pudo escribir en la cola AD: falló la conexión con el servidor de archivos (red o SMB). Compruebe conectividad con el host del UNC.'
+    );
+  }
+
+  if (
+    msg.includes('bad netpath') ||
+    msg.includes('network path') ||
+    msg.includes('ruta de red') ||
+    msg.includes('access is denied') ||
+    msg.includes('acceso denegado') ||
+    msg.includes('logon failure') ||
+    msg.includes('credenciales')
+  ) {
+    return new Error(
+      'No se pudo escribir en la cola AD: no hay acceso al recurso de red (UNC). Compruebe VPN, permisos y que la cuenta del proceso Node tenga acceso al mismo recurso que en el Explorador de archivos.'
+    );
+  }
+
+  const fallback = new Error(
+    'No se pudo escribir en la cola AD. Compruebe AD_QUEUE_UNC, conectividad SMB y permisos. Revise los logs del servidor para más detalle.'
+  );
+  fallback.cause = err;
+  return fallback;
 }
 
 /**
@@ -270,11 +327,11 @@ export async function enqueueAdUserRequest(body) {
       userPrincipalName = picked.userPrincipalName;
     } catch (err) {
       if (err instanceof AdministrativePrecheckError) throw err;
-      const msg = err?.message || String(err);
-      console.error('[AD-Queue] prechequeo antes de encolar:', msg);
+      const safeDetail = formatPrecheckOrMixedFailureDetail(err);
+      console.error('[AD-Queue] prechequeo antes de encolar:', err);
       throw new AdministrativePrecheckError(
         PRECHECK_CODES.GRAPH_UNAVAILABLE,
-        `No se pudo completar el prechequeo antes de encolar (Entra ID / LDAP / cola): ${msg}`,
+        `No se pudo completar el prechequeo antes de encolar (Entra ID / LDAP / cola): ${safeDetail}`,
         503
       );
     }

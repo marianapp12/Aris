@@ -9,6 +9,7 @@ import {
   AdministrativePrecheckError,
   PRECHECK_CODES,
 } from './administrativePrecheckErrors.js';
+import { formatPrecheckOrMixedFailureDetail } from '../utils/adQueueErrorSanitize.js';
 
 export { AdministrativePrecheckError, PRECHECK_CODES } from './administrativePrecheckErrors.js';
 
@@ -103,11 +104,11 @@ export async function runAdministrativeGraphPrecheck(params) {
     });
   } catch (err) {
     if (err instanceof AdministrativePrecheckError) throw err;
-    const msg = err?.message || String(err);
-    console.error('[AD cola] prechequeo sAM/UPN:', msg);
+    const safeDetail = formatPrecheckOrMixedFailureDetail(err);
+    console.error('[AD cola] prechequeo sAM/UPN:', err);
     throw new AdministrativePrecheckError(
       PRECHECK_CODES.GRAPH_UNAVAILABLE,
-      `No se pudo resolver nombre de cuenta para la cola AD: ${msg}`,
+      `No se pudo resolver nombre de cuenta para la cola AD: ${safeDetail}`,
       503
     );
   }

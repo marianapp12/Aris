@@ -3,6 +3,7 @@ import {
   UserFormData,
   AdQueueRequestResult,
   OPERATIONAL_SEDE_OPTIONS,
+  type AdministrativeBulkRowResult,
   type OperationalGroupMembershipResult,
 } from '../types/user';
 import { isAdScriptDuplicateEmployeeIdMessage } from '../utils/adQueueScriptMessages';
@@ -196,6 +197,41 @@ type CreatedUser = {
   /** OU de destino en Active Directory (alta administrativa encolada). */
   adOrganizationalUnitDn?: string;
 };
+
+/** Valores de la respuesta 202 (propuesta) para comparar con el resultado confirmado en AD. */
+type AdminEncoladoPropuesta = {
+  displayName: string;
+  userName: string;
+  email: string;
+};
+
+function normAdIdentity(s: string): string {
+  return s.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/**
+ * Comprueba si la propuesta al encolar difiere de lo reportado en resultado-*.json (éxito en AD).
+ */
+function adminProposalDiffersFromAdResult(
+  prop: AdminEncoladoPropuesta,
+  r: AdQueueRequestResult
+): boolean {
+  if (r.status !== 'success') return false;
+  if (r.displayName?.trim() && normAdIdentity(prop.displayName) !== normAdIdentity(r.displayName)) {
+    return true;
+  }
+  const upn = (r.userPrincipalName || '').replace(/^—$/, '').trim();
+  const propUpn = prop.email.replace(/^—$/, '').trim();
+  if (upn && propUpn && normAdIdentity(propUpn) !== normAdIdentity(upn)) {
+    return true;
+  }
+  const sam = (r.samAccountName || '').trim();
+  const propSam = prop.userName.replace(/^—$/, '').trim();
+  if (sam && propSam && normAdIdentity(propSam) !== normAdIdentity(sam)) {
+    return true;
+  }
+  return false;
+}
 
 /** Resume un error de Graph (código + mensaje corto) para mostrar junto a una asignación de grupo M365. */
 function formatGraphErrorSuffix(g: OperationalGroupMembershipResult['graphError']): string {
@@ -401,6 +437,8 @@ const AD_RESULT_POLL_WINDOW_MINUTES = Math.max(
   1,
   Math.round((AD_RESULT_MAX_POLLS * AD_RESULT_POLL_MS) / 60_000)
 );
+/** Máx. filas de carga masiva admin consultando resultado AD a la vez (GET por requestId). */
+const BULK_AD_POLL_CONCURRENCY = 5;
 
 /** Fila devuelta por POST .../bulk (operativo o administrativo). */
 type BulkRowResult = {
@@ -451,39 +489,13 @@ const CreateUserForm = () => {
   const [bulkFile, setBulkFile] = useState<File | null>(null);
   const [bulkStatus, setBulkStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
   const [bulkMessage, setBulkMessage] = useState<string>('');
-  const [bulkResults, setBulkResults] = useState<
-    {
-      row: number;
-      status: string;
-      userPrincipalName?: string;
-      displayName?: string;
-      sede?: string;
-      groupObjectId?: string;
-      groupMemberAdded?: boolean;
-      groupMemberships?: OperationalGroupMembershipResult[];
-      message?: string;
-      code?: string;
-    }[]
-    | null
-  >(null);
+  const [bulkResults, setBulkResults] = useState<BulkRowResult[] | null>(null);
 
   const [bulkAdminFile, setBulkAdminFile] = useState<File | null>(null);
   const [bulkAdminStatus, setBulkAdminStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
   const [bulkAdminMessage, setBulkAdminMessage] = useState<string>('');
   const [bulkAdminResults, setBulkAdminResults] = useState<
-    {
-      row: number;
-      status: string;
-      userPrincipalName?: string;
-      displayName?: string;
-      requestId?: string;
-      proposedUserName?: string;
-      queueAction?: 'create' | 'updateByEmployeeId';
-      message?: string;
-      /** Código de prechequeo / negocio cuando el backend lo envía (p. ej. AdministrativePrecheckError). */
-      code?: string;
-    }[]
-    | null
+    AdministrativeBulkRowResult[] | null
   >(null);
 
   const [queueConnStatus, setQueueConnStatus] = useState<'idle' | 'loading' | 'success' | 'error'>(
@@ -497,6 +509,9 @@ const CreateUserForm = () => {
   } | null>(null);
 
   const [adminSmbGatePassed, setAdminSmbGatePassed] = useState(false);
+  /** Snapshot 202 (propuesta) solo alta administrativa; se compara con `adScriptResult` al confirmar. */
+  const [adminEncoladoPropuesta, setAdminEncoladoPropuesta] =
+    useState<AdminEncoladoPropuesta | null>(null);
 
   const [adScriptResult, setAdScriptResult] = useState<AdQueueRequestResult | null>(null);
   const [adScriptPollExhausted, setAdScriptPollExhausted] = useState(false);
@@ -504,6 +519,10 @@ const CreateUserForm = () => {
   const [adPollLastError, setAdPollLastError] = useState<string | null>(null);
   const [adManualCheckLoading, setAdManualCheckLoading] = useState(false);
   const adPollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Resultado de GET .../result por requestId (carga masiva admin); la clave es el requestId. */
+  const [bulkAdResultByRequestId, setBulkAdResultByRequestId] = useState<
+    Record<string, AdQueueRequestResult>
+  >({});
 
   /**
    * Tras encolar administrativo: consulta periódicamente `resultado-{requestId}.json` vía API hasta success/error
@@ -569,8 +588,8 @@ const CreateUserForm = () => {
 
   /**
    * El 202 al encolar trae UPN/usuario propuestos; PowerShell puede asignar otro sAM/UPN.
-   * Cuando el polling recibe success con userPrincipalName/email del archivo resultado-*.json,
-   * alineamos la tarjeta de éxito con lo que quedó en Active Directory.
+   * Cuando el polling recibe success con displayName / userPrincipalName / email del archivo
+   * resultado-*.json, alineamos la tarjeta de éxito con lo que quedó en Active Directory.
    */
   useEffect(() => {
     if (!adScriptResult || adScriptResult.status !== 'success') return;
@@ -586,17 +605,119 @@ const CreateUserForm = () => {
       (emailDisplay && emailDisplay.includes('@')
         ? emailDisplay.split('@')[0]
         : '');
+    const displayNameFinal = adScriptResult.displayName?.trim();
 
-    if (!emailDisplay && !userNameFinal) return;
+    if (!emailDisplay && !userNameFinal && !displayNameFinal) return;
 
     setCreatedUser((prev) => {
       if (!prev || prev.creationType !== 'administrative') return prev;
       const nextEmail = emailDisplay || prev.email;
       const nextUser = userNameFinal || prev.userName;
-      if (nextEmail === prev.email && nextUser === prev.userName) return prev;
-      return { ...prev, email: nextEmail, userName: nextUser };
+      const nextDisplay = displayNameFinal || prev.displayName;
+      if (
+        nextEmail === prev.email &&
+        nextUser === prev.userName &&
+        nextDisplay === prev.displayName
+      ) {
+        return prev;
+      }
+      return {
+        ...prev,
+        email: nextEmail,
+        userName: nextUser,
+        displayName: nextDisplay,
+      };
     });
   }, [adScriptResult, createdUser?.creationType]);
+
+  /**
+   * Carga masiva admin: un worker pool consulta el resultado de AD por cada requestId encolado con éxito;
+   * UPN, correo y sAM fiables solo existen al completar (igual que el flujo individual).
+   */
+  useEffect(() => {
+    if (!bulkAdminResults) {
+      setBulkAdResultByRequestId({});
+      return undefined;
+    }
+    const hasSuccess = bulkAdminResults.some((r) => r.status === 'success' && r.requestId?.trim());
+    if (!hasSuccess) {
+      setBulkAdResultByRequestId({});
+      return undefined;
+    }
+    const successIds = [
+      ...new Set(
+        bulkAdminResults
+          .filter((r) => r.status === 'success' && r.requestId?.trim())
+          .map((r) => r.requestId!.trim())
+      ),
+    ];
+    if (successIds.length === 0) {
+      return undefined;
+    }
+
+    setBulkAdResultByRequestId({});
+
+    let cancelled = false;
+    const idQueue = successIds.slice();
+
+    const pollOne = async (requestId: string) => {
+      let n = 0;
+      while (!cancelled && n < AD_RESULT_MAX_POLLS) {
+        try {
+          const r = await getAdministrativeQueueRequestResult(requestId);
+          if (cancelled) return;
+          if (r.status === 'success' || r.status === 'error') {
+            setBulkAdResultByRequestId((prev) => ({ ...prev, [requestId]: r }));
+            return;
+          }
+          n += 1;
+          await new Promise((res) => {
+            setTimeout(res, AD_RESULT_POLL_MS);
+          });
+        } catch (err) {
+          if (cancelled) return;
+          const msg =
+            err instanceof Error
+              ? err.message
+              : 'Error al consultar el resultado en Active Directory.';
+          setBulkAdResultByRequestId((prev) => ({
+            ...prev,
+            [requestId]: {
+              status: 'error',
+              message: msg,
+              requestId,
+            } as AdQueueRequestResult,
+          }));
+          return;
+        }
+      }
+      if (!cancelled) {
+        setBulkAdResultByRequestId((prev) => ({
+          ...prev,
+          [requestId]: {
+            status: 'error',
+            message: `Tiempo de espera agotado (unos ${AD_RESULT_POLL_WINDOW_MINUTES} minutos) al consultar el resultado en Active Directory.`,
+            requestId,
+          } as AdQueueRequestResult,
+        }));
+      }
+    };
+
+    const nWorkers = Math.min(BULK_AD_POLL_CONCURRENCY, idQueue.length);
+    const runWorker = async () => {
+      while (!cancelled) {
+        const requestId = idQueue.shift();
+        if (!requestId) return;
+        await pollOne(requestId);
+      }
+    };
+    const workers = Array.from({ length: nWorkers }, () => runWorker());
+    void Promise.all(workers);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [bulkAdminResults]);
 
   /** Una consulta manual al resultado AD (botón “Comprobar estado”), sin depender del polling. */
   const handleRefreshAdScriptResult = async () => {
@@ -650,9 +771,7 @@ const CreateUserForm = () => {
     if (name === 'postalCode') {
       const t = value.replace(/\s/g, '').trim();
       if (!t) {
-        return userCreationType === 'operational' || userCreationType === 'administrative'
-          ? 'El código postal es obligatorio'
-          : '';
+        return 'El código postal es obligatorio';
       }
       if (
         !/^\d+$/.test(t) ||
@@ -704,10 +823,8 @@ const CreateUserForm = () => {
       'apellido1',
       'puesto',
       'departamento',
+      'postalCode',
     ];
-    if (userCreationType === 'operational' || userCreationType === 'administrative') {
-      required.push('postalCode');
-    }
     if (userCreationType === 'administrative') {
       required.push('ciudad');
     }
@@ -719,9 +836,7 @@ const CreateUserForm = () => {
       'apellido2',
       'puesto',
       'departamento',
-      ...(userCreationType === 'operational' || userCreationType === 'administrative'
-        ? (['postalCode'] as const)
-        : []),
+      'postalCode',
       'sede',
       'cedula',
       'ciudad',
@@ -753,7 +868,6 @@ const CreateUserForm = () => {
       }
 
       if (field === 'postalCode') {
-        if (userCreationType !== 'operational' && userCreationType !== 'administrative') return;
         const error = validateField(field, value);
         if (error) newErrors[field] = error;
         return;
@@ -1007,6 +1121,11 @@ const CreateUserForm = () => {
         const upn = accepted.userPrincipalName ?? '';
         const localPart = upn.includes('@') ? upn.split('@')[0] : '';
         const resolvedUserName = accepted.proposedUserName ?? (localPart || '—');
+        setAdminEncoladoPropuesta({
+          displayName: accepted.displayName,
+          userName: resolvedUserName,
+          email: upn || '—',
+        });
         setCreatedUser({
           displayName: accepted.displayName,
           userName: resolvedUserName,
@@ -1035,6 +1154,7 @@ const CreateUserForm = () => {
     setAdScriptResult(null);
     setAdScriptPollExhausted(false);
     setAdManualCheckLoading(false);
+    setAdminEncoladoPropuesta(null);
     setCreatedUser(null);
     setStatus('idle');
     setErrorMessage('');
@@ -1144,6 +1264,13 @@ const CreateUserForm = () => {
     const bulkCreates = created.filter((r) => r.queueAction !== 'updateByEmployeeId');
     const bulkUpdates = created.filter((r) => r.queueAction === 'updateByEmployeeId');
 
+    const encoladoPendienteAd = created.filter((u) => {
+      const rid = u.requestId?.trim();
+      if (!rid) return true;
+      const r = bulkAdResultByRequestId[rid];
+      return r == null;
+    }).length;
+
     return (
       <div className="success-wrapper">
         <div className="success-card">
@@ -1163,62 +1290,151 @@ const CreateUserForm = () => {
                 365).{' '}
               </>
             )}
-            Archivos JSON en la carpeta compartida; el procesamiento en el servidor puede tardar
-            varios minutos.
+            Archivos JSON en la carpeta compartida. El <strong>UPN, correo y usuario (sAM)</strong>{' '}
+            de cada fila se rellenan <strong>cuando el script confirma</strong> el resultado en el
+            directorio (mismo criterio que el alta individual).{' '}
+            {encoladoPendienteAd > 0
+              ? `Consultando en el servidor la confirmación de Active Directory para ${encoladoPendienteAd} solicitud(es)…`
+              : 'Consulta a resultados de AD finalizada.'}
           </p>
 
           <h3 className="bulk-admin-section-heading">Solicitudes encoladas correctamente</h3>
-          {created.map((u, index) => (
-            <div className="bulk-admin-result-group" key={`admin-bulk-${index}`}>
-              <div className="bulk-admin-result-group-title">
-                Fila {u.row} —{' '}
-                {u.queueAction === 'updateByEmployeeId'
-                  ? 'Actualización de perfil'
-                  : 'Alta nueva en Active Directory'}
-              </div>
-              <div className="success-table">
-                <div className="success-row">
-                  <span className="success-label">NOMBRE (DISPLAY)</span>
-                  <span className="success-value">{u.displayName ?? '—'}</span>
+          <div className="bulk-admin-success-list">
+          {created.map((u) => {
+            const rid = u.requestId?.trim();
+            const adRes = rid ? bulkAdResultByRequestId[rid] : undefined;
+            const adOk = adRes?.status === 'success';
+            const adMail =
+              adRes &&
+              adOk &&
+              adRes.email?.trim() &&
+              adRes.userPrincipalName?.trim() &&
+              normAdIdentity(adRes.email) !== normAdIdentity(adRes.userPrincipalName)
+                ? adRes.email.trim()
+                : null;
+            const adUpnStr = adOk ? adRes.userPrincipalName?.trim() || '' : '';
+            const adSam = adOk ? adRes.samAccountName?.trim() || '' : '';
+
+            return (
+              <div
+                className="bulk-admin-row-card"
+                key={rid || `row-${u.row}`}
+              >
+                <div className="bulk-admin-row-card__head">
+                  <span className="bulk-admin-row-card__filabadge">Fila {u.row}</span>
+                  <span
+                    className={
+                      u.queueAction === 'updateByEmployeeId'
+                        ? 'bulk-admin-row-card__type bulk-admin-row-card__type--update'
+                        : 'bulk-admin-row-card__type bulk-admin-row-card__type--create'
+                    }
+                  >
+                    {u.queueAction === 'updateByEmployeeId'
+                      ? 'Actualización de perfil'
+                      : 'Alta nueva'}
+                  </span>
                 </div>
-                {u.queueAction !== 'updateByEmployeeId' ? (
-                  <>
-                    <div className="success-row">
-                      <span className="success-label">UPN PROPUESTO (COLA)</span>
-                      <span className="success-value highlight">
-                        {u.userPrincipalName ?? '—'}
-                      </span>
-                    </div>
-                    <div className="success-row">
-                      <span className="success-label">USUARIO (sAM) PROPUESTO</span>
-                      <span className="success-value">{u.proposedUserName ?? '—'}</span>
-                    </div>
-                  </>
-                ) : (
-                  u.userPrincipalName && (
-                    <div className="success-row">
-                      <span className="success-label">UPN CONOCIDO</span>
-                      <span className="success-value highlight">{u.userPrincipalName}</span>
-                    </div>
-                  )
-                )}
-                <div className="success-row">
-                  <span className="success-label">ID DE SOLICITUD</span>
-                  <span className="success-value mono">{u.requestId ?? '—'}</span>
-                </div>
-                {u.adOrganizationalUnitDn?.trim() && (
-                  <div className="success-row">
-                    <span className="success-label">
-                      UBICACIÓN EN ACTIVE DIRECTORY (OU)
-                    </span>
-                    <span className="success-value mono">
-                      {u.adOrganizationalUnitDn.trim()}
-                    </span>
+                <div className="bulk-admin-row-card__meta">
+                  <div className="bulk-admin-meta-item">
+                    <span className="bulk-admin-meta-item__label">Solicitud</span>
+                    <code className="bulk-admin-meta-item__value">{u.requestId ?? '—'}</code>
                   </div>
-                )}
+                  {u.adOrganizationalUnitDn?.trim() ? (
+                    <div className="bulk-admin-meta-item bulk-admin-meta-item--wide">
+                      <span className="bulk-admin-meta-item__label">OU</span>
+                      <code className="bulk-admin-meta-item__value bulk-admin-meta-item__value--dn">
+                        {u.adOrganizationalUnitDn.trim()}
+                      </code>
+                    </div>
+                  ) : null}
+                </div>
+
+                {adRes == null ? (
+                  <div className="bulk-ad-pending">
+                    <span className="bulk-ad-pending__icon" aria-hidden>
+                      ⏳
+                    </span>
+                    <p className="bulk-ad-pending__text">
+                      Consultando en Active Directory… El bloque de abajo se rellenará con los datos
+                      definitivos al confirmar el script.
+                    </p>
+                  </div>
+                ) : null}
+                {adRes?.status === 'error' ? (
+                  isAdScriptDuplicateEmployeeIdMessage(adRes.message) ? (
+                    <div className="bulk-admin-bulk-ad-err">
+                      <p className="error-text" style={{ marginTop: 0, marginBottom: 6 }}>
+                        <strong>Cédula duplicada en Active Directory (fila {u.row}).</strong>
+                      </p>
+                      <p className="error-text" style={{ marginTop: 0 }}>{adRes.message}</p>
+                    </div>
+                  ) : (
+                    <p className="error-text bulk-admin-err-line">
+                      <strong>Resultado en AD (fila {u.row}):</strong> {adRes.message}
+                    </p>
+                  )
+                ) : null}
+                {adOk && adRes ? (
+                  <div className="bulk-ad-saved-block">
+                    <p className="admin-ad-section-h3 bulk-ad-saved-title">
+                      Como quedó guardado en el directorio
+                    </p>
+                    <div
+                      className="success-table bulk-ad-saved-confirm"
+                      role="table"
+                      aria-label="Valores en Active Directory"
+                    >
+                      <div className="success-row" role="row">
+                        <span className="success-label" role="rowheader">
+                          Nombre
+                        </span>
+                        <span className="success-value" role="cell">
+                          {adRes.displayName?.trim() || '—'}
+                        </span>
+                      </div>
+                      {adUpnStr ? (
+                        <div className="success-row" role="row">
+                          <span className="success-label" role="rowheader">
+                            UPN
+                          </span>
+                          <span className="success-value highlight" role="cell">
+                            {adUpnStr}
+                          </span>
+                        </div>
+                      ) : null}
+                      {adMail ? (
+                        <div className="success-row" role="row">
+                          <span className="success-label" role="rowheader">
+                            Correo (mail)
+                          </span>
+                          <span className="success-value highlight" role="cell">
+                            {adMail}
+                          </span>
+                        </div>
+                      ) : null}
+                      {adSam ? (
+                        <div className="success-row" role="row">
+                          <span className="success-label" role="rowheader">
+                            Usuario (sAM)
+                          </span>
+                          <span className="success-value mono" role="cell">
+                            {adSam}
+                          </span>
+                        </div>
+                      ) : null}
+                    </div>
+                    {adRes.processedAt ? (
+                      <p className="note bulk-ad-saved-foot">
+                        Procesado:{' '}
+                        <span className="bulk-ad-saved-timestamp">{adRes.processedAt}</span>
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
-            </div>
-          ))}
+            );
+          })}
+          </div>
 
           {failed.length > 0 && (
             <>
@@ -1251,14 +1467,17 @@ const CreateUserForm = () => {
           )}
 
           <div className="success-note">
-            La contraseña y la creación final en AD las aplica el script en el servidor. Revise la
-            carpeta <code>error</code> en el share si alguna fila falló tras el envío.
+            La contraseña y la creación final en Active Directory las aplica el script en el
+            servidor. Cada <strong>tabla “Como quedó guardado en el directorio”</strong> se rellena al
+            confirmarse el procesamiento. Revise la carpeta <code>error</code> en el share si una fila
+            falla tras el envío.
           </div>
 
           <button
             type="button"
             className="primary-btn"
             onClick={() => {
+              setBulkAdResultByRequestId({});
               setBulkAdminResults(null);
               setBulkAdminFile(null);
               setBulkAdminStatus('idle');
@@ -1449,6 +1668,23 @@ const CreateUserForm = () => {
     const adminAdIdentityConfirmed =
       createdUser.creationType === 'administrative' &&
       adScriptResult?.status === 'success';
+    const isAdmin = createdUser.creationType === 'administrative';
+    const adMismatch =
+      isAdmin &&
+      adminAdIdentityConfirmed &&
+      adScriptResult &&
+      adminEncoladoPropuesta &&
+      adminProposalDiffersFromAdResult(adminEncoladoPropuesta, adScriptResult);
+    const adUpn = adScriptResult?.userPrincipalName?.trim() || createdUser.email;
+    const adDisplay =
+      adScriptResult?.displayName?.trim() || createdUser.displayName;
+    const adMail =
+      adScriptResult?.email?.trim() && adScriptResult.userPrincipalName?.trim() &&
+      normAdIdentity(adScriptResult.email) !==
+        normAdIdentity(adScriptResult.userPrincipalName)
+        ? adScriptResult.email.trim()
+        : null;
+    const adSam = adScriptResult?.samAccountName?.trim() || createdUser.userName;
 
     return (
       <div className="success-wrapper">
@@ -1466,95 +1702,188 @@ const CreateUserForm = () => {
 
           <p className="success-subtitle">
             {createdUser.creationType === 'administrative'
-              ? isAdminProfileUpdate
-                ? 'La solicitud de actualización de datos se aplicará en Active Directory cuando el servidor procese el archivo; Azure AD Connect sincronizará los cambios con Microsoft 365 y puede tardar varios minutos.'
-                : 'La solicitud se guardó en la cola del servidor. El usuario se creará en Active Directory en breve y llegará a Microsoft 365 mediante Azure AD Connect; puede tardar varios minutos.'
+              ? adminAdIdentityConfirmed
+                ? isAdminProfileUpdate
+                  ? 'Solicitud procesada. Los valores de la sección “Valores en Active Directory” deben coincidir con el objeto en el directorio; Azure AD Connect puede tardar en reflejarlos en Microsoft 365.'
+                  : 'El usuario se registró en Active Directory. Use la tabla de confirmación para verificar nombres, UPN y usuario frente a “Usuarios y equipos de AD”.'
+                : isAdminProfileUpdate
+                  ? 'La solicitud de actualización de datos se aplicará en Active Directory cuando el servidor procese el archivo; Azure AD Connect sincronizará los cambios con Microsoft 365 y puede tardar varios minutos.'
+                  : 'La solicitud se guardó en la cola del servidor. Al procesarse, los datos finales (nombre, UPN, usuario) pueden diferir de la propuesta; se mostrarán al confirmar abajo.'
               : 'El usuario debe cambiar su contraseña en el primer inicio de sesión.'}
           </p>
 
-          <div className="success-table">
-            <div className="success-row">
-              <span className="success-label">NOMBRE COMPLETO</span>
-              <span className="success-value">
-                {createdUser.displayName}
-              </span>
-            </div>
-
-            <div className="success-row">
-              <span className="success-label">
-                {createdUser.creationType === 'administrative'
-                  ? 'UPN / CORREO'
-                  : 'CORREO CORPORATIVO'}
-              </span>
-              <span
-                className={
-                  createdUser.creationType === 'administrative' && !adminAdIdentityConfirmed
-                    ? 'success-value success-value--pending'
-                    : 'success-value highlight'
-                }
-              >
-                {createdUser.creationType === 'administrative' && !adminAdIdentityConfirmed
-                  ? adScriptResult?.status === 'error'
-                    ? 'No confirmado — revise el resultado en Active Directory más abajo.'
-                    : 'Se mostrará cuando Active Directory confirme la solicitud.'
-                  : createdUser.email}
-              </span>
-            </div>
-
-            <div className="success-row">
-              <span className="success-label">USUARIO</span>
-              <span
-                className={
-                  createdUser.creationType === 'administrative' && !adminAdIdentityConfirmed
-                    ? 'success-value success-value--pending'
-                    : 'success-value'
-                }
-              >
-                {createdUser.creationType === 'administrative' && !adminAdIdentityConfirmed
-                  ? adScriptResult?.status === 'error'
-                    ? 'No confirmado — revise el resultado más abajo.'
-                    : 'Se mostrará cuando Active Directory confirme la solicitud.'
-                  : createdUser.userName}
-              </span>
-            </div>
-
-            {createdUser.creationType === 'operational' && (
-              <>
-                <div className="success-row">
-                  <span className="success-label">SEDE</span>
-                  <span className="success-value">
-                    {createdUser.sede?.trim() || '—'}
-                  </span>
-                </div>
-                <OperationalGroupAssignmentsBlock
-                  memberships={createdUser.groupMemberships}
-                  sedeName={createdUser.sede}
-                  legacySede={createdUser.sede}
-                  legacyGroupObjectId={createdUser.groupObjectId}
-                  legacyGroupMemberAdded={createdUser.groupMemberAdded}
-                />
-              </>
-            )}
-
-            {createdUser.requestId && (
+          {createdUser.creationType === 'operational' && (
+            <div className="success-table">
               <div className="success-row">
-                <span className="success-label">ID DE SOLICITUD</span>
-                <span className="success-value mono">{createdUser.requestId}</span>
+                <span className="success-label">NOMBRE COMPLETO</span>
+                <span className="success-value">{createdUser.displayName}</span>
               </div>
-            )}
+              <div className="success-row">
+                <span className="success-label">CORREO CORPORATIVO</span>
+                <span className="success-value highlight">{createdUser.email}</span>
+              </div>
+              <div className="success-row">
+                <span className="success-label">USUARIO</span>
+                <span className="success-value">{createdUser.userName}</span>
+              </div>
+              <div className="success-row">
+                <span className="success-label">SEDE</span>
+                <span className="success-value">
+                  {createdUser.sede?.trim() || '—'}
+                </span>
+              </div>
+              <OperationalGroupAssignmentsBlock
+                memberships={createdUser.groupMemberships}
+                sedeName={createdUser.sede}
+                legacySede={createdUser.sede}
+                legacyGroupObjectId={createdUser.groupObjectId}
+                legacyGroupMemberAdded={createdUser.groupMemberAdded}
+              />
+            </div>
+          )}
 
-            {createdUser.creationType === 'administrative' &&
-              createdUser.adOrganizationalUnitDn?.trim() && (
-                <div className="success-row">
-                  <span className="success-label">
-                    UBICACIÓN EN ACTIVE DIRECTORY (OU)
-                  </span>
-                  <span className="success-value mono">
-                    {createdUser.adOrganizationalUnitDn.trim()}
-                  </span>
+          {isAdmin && adminAdIdentityConfirmed && adScriptResult ? (
+            <>
+              {adMismatch && (
+                <div className="admin-ad-mismatch-callout" role="status">
+                  <p className="admin-ad-mismatch-callout__title">Diferencia respecto a la propuesta al encolar</p>
+                  <p className="admin-ad-mismatch-callout__text">
+                    Lo mostrado al aceptar la cola (UPN, usuario o nombre) no coincide con lo
+                    reportado ahora por Active Directory (por ejemplo, colisión de cuentas o reglas
+                    en el script). <strong>Para validar, use solo la sección “Valores en Active
+                    Directory”</strong> o el objeto de usuario en el directorio, no el primer
+                    pantallazo.
+                  </p>
                 </div>
               )}
-          </div>
+              <h3 className="admin-ad-section-h3">Valores en Active Directory</h3>
+              <p className="admin-ad-lead">
+                Nombre, UPN, correo (si aplica) y sAM que quedaron guardados o que devolvió el
+                resultado del script; alínelo con <strong>Usuarios y equipos de Active Directory</strong>.
+              </p>
+              <div className="success-table">
+                <div className="success-row">
+                  <span className="success-label">NOMBRE COMPLETO</span>
+                  <span className="success-value">{adDisplay}</span>
+                </div>
+                <div className="success-row">
+                  <span className="success-label">UPN</span>
+                  <span className="success-value highlight">{adUpn}</span>
+                </div>
+                {adMail ? (
+                  <div className="success-row">
+                    <span className="success-label">Correo (atributo mail)</span>
+                    <span className="success-value highlight">{adMail}</span>
+                  </div>
+                ) : null}
+                <div className="success-row">
+                  <span className="success-label">USUARIO (sAMAccountName)</span>
+                  <span className="success-value mono">{adSam}</span>
+                </div>
+                {createdUser.requestId && (
+                  <div className="success-row">
+                    <span className="success-label">ID DE SOLICITUD</span>
+                    <span className="success-value mono">{createdUser.requestId}</span>
+                  </div>
+                )}
+                {createdUser.adOrganizationalUnitDn?.trim() && (
+                  <div className="success-row">
+                    <span className="success-label">
+                      UBICACIÓN EN ACTIVE DIRECTORY (OU)
+                    </span>
+                    <span className="success-value mono">
+                      {createdUser.adOrganizationalUnitDn.trim()}
+                    </span>
+                  </div>
+                )}
+              </div>
+              {adminEncoladoPropuesta ? (
+                <details className="admin-ad-proposal-details">
+                  <summary>Valores propuestos al encolar (referencia)</summary>
+                  <div className="success-table" style={{ marginTop: 12 }}>
+                    <div className="success-row">
+                      <span className="success-label">NOMBRE (propuesta)</span>
+                      <span className="success-value muted">
+                        {adminEncoladoPropuesta.displayName}
+                      </span>
+                    </div>
+                    <div className="success-row">
+                      <span className="success-label">UPN / correo (propuesta)</span>
+                      <span className="success-value muted">
+                        {adminEncoladoPropuesta.email}
+                      </span>
+                    </div>
+                    <div className="success-row">
+                      <span className="success-label">Usuario (propuesta)</span>
+                      <span className="success-value muted mono">
+                        {adminEncoladoPropuesta.userName}
+                      </span>
+                    </div>
+                  </div>
+                </details>
+              ) : null}
+            </>
+          ) : null}
+
+          {isAdmin && !adminAdIdentityConfirmed && (
+            <>
+              <h3 className="admin-ad-section-h3">Propuesta al encolar</h3>
+              <p className="admin-ad-lead">
+                Valores devueltos al aceptar la cola. El sAM/UPN definitivo lo fija el script en
+                Active Directory; al confirmar, se mostrarán abajo y podrán diferir.
+              </p>
+              <div className="success-table">
+                <div className="success-row">
+                  <span className="success-label">NOMBRE COMPLETO</span>
+                  <span className="success-value">{createdUser.displayName}</span>
+                </div>
+                <div className="success-row">
+                  <span className="success-label">UPN / CORREO (propuesta)</span>
+                  <span
+                    className={
+                      adScriptResult?.status === 'error'
+                        ? 'success-value success-value--pending'
+                        : 'success-value highlight'
+                    }
+                  >
+                    {adScriptResult?.status === 'error'
+                      ? 'No confirmado en AD — detalle en “Estado de procesamiento en el servidor”.'
+                      : createdUser.email}
+                  </span>
+                </div>
+                <div className="success-row">
+                  <span className="success-label">USUARIO (propuesta)</span>
+                  <span
+                    className={
+                      adScriptResult?.status === 'error'
+                        ? 'success-value success-value--pending'
+                        : 'success-value'
+                    }
+                  >
+                    {adScriptResult?.status === 'error'
+                      ? 'No confirmado en AD — vea abajo.'
+                      : createdUser.userName}
+                  </span>
+                </div>
+                {createdUser.requestId && (
+                  <div className="success-row">
+                    <span className="success-label">ID DE SOLICITUD</span>
+                    <span className="success-value mono">{createdUser.requestId}</span>
+                  </div>
+                )}
+                {createdUser.adOrganizationalUnitDn?.trim() && (
+                  <div className="success-row">
+                    <span className="success-label">
+                      UBICACIÓN EN ACTIVE DIRECTORY (OU)
+                    </span>
+                    <span className="success-value mono">
+                      {createdUser.adOrganizationalUnitDn.trim()}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
 
           <div className="success-note">
             {createdUser.creationType === 'administrative' ? (
@@ -1566,10 +1895,10 @@ const CreateUserForm = () => {
                 </>
               ) : (
                 <>
-                  La contraseña inicial la define el script de Active Directory en el servidor. El
-                  UPN, el correo y el nombre de usuario de la tabla aparecen cuando el script
-                  confirma el éxito en Active Directory (pueden diferir de la propuesta interna del
-                  alta).
+                  La contraseña inicial la define el script de Active Directory en el servidor.{' '}
+                  {adminAdIdentityConfirmed
+                    ? 'Los valores de “Valores en Active Directory” son el referente comprobado con el directorio; si aún duda, abra el objeto de usuario en AD.'
+                    : 'Cuando el script confirme, verá en pantalla el nombre, UPN y usuario definitivos; pueden diferir de la fila de propuesta de arriba.'}
                 </>
               )
             ) : (
@@ -1583,7 +1912,7 @@ const CreateUserForm = () => {
           {createdUser.creationType === 'administrative' && createdUser.requestId ? (
             <div className="ad-queue-result-block" style={{ marginTop: 20 }}>
               <h4 className="section-title" style={{ fontSize: '0.95rem', marginBottom: 8 }}>
-                Resultado en Active Directory
+                Estado de procesamiento en el servidor
               </h4>
               {!adScriptResult && !adScriptPollExhausted ? (
                 <>
@@ -1614,25 +1943,6 @@ const CreateUserForm = () => {
               {adScriptResult?.status === 'success' ? (
                 <p className="note success-note" style={{ marginTop: 0 }}>
                   {adScriptResult.message}
-                  {adScriptResult.samAccountName ? (
-                    <>
-                      {' '}
-                      <strong>Cuenta AD (sAM):</strong> {adScriptResult.samAccountName}
-                    </>
-                  ) : null}
-                  {adScriptResult.userPrincipalName ? (
-                    <>
-                      {' '}
-                      <strong>UPN:</strong> {adScriptResult.userPrincipalName}
-                    </>
-                  ) : null}
-                  {adScriptResult.email &&
-                  adScriptResult.email !== adScriptResult.userPrincipalName ? (
-                    <>
-                      {' '}
-                      <strong>Correo:</strong> {adScriptResult.email}
-                    </>
-                  ) : null}
                   {adScriptResult.processedAt ? (
                     <span className="mono"> — {adScriptResult.processedAt}</span>
                   ) : null}
@@ -2056,10 +2366,10 @@ const CreateUserForm = () => {
                     Use la <strong>plantilla descargable</strong> para no omitir columnas: el archivo debe
                     traer <strong>todas las columnas previstas</strong>. En alta operativa solo son{' '}
                     <strong>opcionales</strong> segundo nombre y segundo apellido; el resto es{' '}
-                    <strong>obligatorio</strong>. En <strong>nombres y apellidos</strong> use solo letras
-                    (incluye tildes y ñ), espacios y guiones. En <strong>puesto y departamento</strong>{' '}
-                    también se permiten números y los signos <code>. , - / & ( ) +</code>. El{' '}
-                    <strong>código postal</strong> es solo dígitos; puede escribirlo como texto en Excel.
+                    <strong>obligatorio</strong>. En <strong>nombres, apellidos, puesto y departamento</strong>{' '}
+                    use solo letras (incluye tildes y ñ), espacios y guiones; máximo 50 caracteres en
+                    puesto y departamento. El <strong>código postal</strong> es solo dígitos; puede
+                    escribirlo como texto en Excel.
                   </p>
                   <ul className="bulk-help-list bulk-help-list--columns">
                     <li>
@@ -2080,13 +2390,12 @@ const CreateUserForm = () => {
                       con ambos apellidos, o dos columnas «Apellido» (1.º y 2.º), según la plantilla.
                     </li>
                     <li>
-                      <strong>Puesto</strong> <span className="bulk-help-tag">(obligatorio)</span> · Texto
-                      con los caracteres adicionales permitidos (véase el recuadro superior). Máximo 50
-                      caracteres.
+                      <strong>Puesto</strong> <span className="bulk-help-tag">(obligatorio)</span> · Solo
+                      letras, espacios y guiones. Mínimo 3 y máximo 50 caracteres.
                     </li>
                     <li>
                       <strong>Departamento</strong> <span className="bulk-help-tag">(obligatorio)</span> ·
-                      Igual criterio que puesto. Máximo 50 caracteres.
+                      Mismo criterio que puesto. Máximo 50 caracteres.
                     </li>
                     <li>
                       <strong>Sede</strong> <span className="bulk-help-tag">(obligatorio)</span> · Texto.

@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "vitest run",
+    "test:verbose": "vitest run --reporter=verbose",
+    "test:coverage": "vitest run --coverage"
   },
   "keywords": [
     "microsoft365",
@@ -28,6 +30,9 @@
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
-    "@types/node": "^20.10.5"
+    "@types/node": "^20.10.5",
+    "@vitest/coverage-v8": "^2.1.9",
+    "supertest": "^7.0.0",
+    "vitest": "^2.1.6"
   }
 }

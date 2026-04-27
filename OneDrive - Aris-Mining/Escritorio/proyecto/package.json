@@ -1,9 +1,13 @@
 {
   "name": "aris-user-provisioning",
   "private": true,
-  "description": "Monorepo: abra DOS terminales desde esta carpeta — (1) npm run dev:backend (2) npm run dev:frontend",
+  "description": "Monorepo: dev:backend + dev:frontend. Pruebas: test:all, test:verbose, test:coverage:all. Informe dinámico: informe:pruebas (métricas §4 en INFORME_PRUEBAS_ULTIMA_EJECUCION). Informe técnico: docs/INFORME_TECNICO_PRUEBAS.md",
   "scripts": {
     "dev:backend": "npm run dev --prefix backend",
-    "dev:frontend": "npm run dev --prefix frontend"
+    "dev:frontend": "npm run dev --prefix frontend",
+    "informe:pruebas": "node scripts/generar-informe-resultado.mjs",
+    "test:all": "npm run test --prefix backend && npm run test --prefix frontend",
+    "test:verbose": "npm run test:verbose --prefix backend && npm run test:verbose --prefix frontend",
+    "test:coverage:all": "npm run test:coverage --prefix backend && npm run test:coverage --prefix frontend"
   }
 }

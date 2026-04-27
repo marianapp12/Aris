@@ -18,6 +18,11 @@ import {
 import { AdministrativePrecheckError } from '../services/graphAdministrativePrecheck.js';
 import { pickFirstAvailableSamAndUpnForAdQueue } from '../services/adLdapSamAccountPick.js';
 import { parseAdministrativeBulkSheet } from '../utils/excelAdministrativeBulkParse.js';
+import { QUEUE_REQUEST_ID_RE } from '../utils/queueRequestId.js';
+import {
+  formatPrecheckOrMixedFailureDetail,
+  isUncFilesystemNoiseMessage,
+} from '../utils/adQueueErrorSanitize.js';
 
 const toTitleCase = (value) =>
   value
@@ -29,10 +34,6 @@ const toTitleCase = (value) =>
 
 const onlyLettersRegex = /[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s-]/;
 const hasInvalidCharsForName = (value) => value && onlyLettersRegex.test(value);
-
-/** Evita path traversal en nombres resultado-*.json (UUID v4 típico de la cola). */
-const QUEUE_REQUEST_ID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * POST /api/users y POST /api/users/administrative — 202 Accepted + requestId (cola SMB)
@@ -99,11 +100,12 @@ export const createUserViaAdQueue = async (req, res) => {
         message: msg,
       });
     }
-    console.error('[AD-Queue] Error al encolar creación administrativa:', msg);
+    console.error('[AD-Queue] Error al encolar creación administrativa:', error?.cause || error);
     return res.status(500).json({
-      error: 'Error interno',
+      error: 'Error al encolar en la cola AD',
       message:
-        process.env.NODE_ENV === 'development' ? msg : 'No se pudo escribir la solicitud en la cola AD',
+        error?.message ||
+        'No se pudo escribir la solicitud en la cola AD. Compruebe AD_QUEUE_UNC y los logs del servidor.',
     });
   }
 };
@@ -377,11 +379,17 @@ export const createAdministrativeUsersBulk = async (req, res) => {
           });
           continue;
         }
-        const msg = error?.message || String(error);
+        if (error?.cause) {
+          console.error(`[AD-Queue] bulk fila ${rowNumber}:`, error.cause);
+        }
+        const rowMsg =
+          error instanceof Error && error.message
+            ? error.message
+            : 'No se pudo encolar la fila en la cola AD. Revise AD_QUEUE_UNC y los logs del servidor.';
         results.push({
           row: rowNumber,
           status: 'error',
-          message: msg,
+          message: rowMsg,
         });
       }
     }
@@ -403,7 +411,7 @@ export const createAdministrativeUsersBulk = async (req, res) => {
 /**
  * GET /api/users/administrative/queue-requests/:requestId/result
  * Lee resultado-{requestId}.json (carpeta resultados del UNC). Expone al front el mismo estado
- * que escribió PowerShell: en éxito, samAccountName / userPrincipalName / email definitivos en AD.
+ * que escribió PowerShell: en éxito, displayName / samAccountName / userPrincipalName / email en AD.
  */
 export const getAdministrativeQueueRequestResult = async (req, res) => {
   const requestId = String(req.params.requestId || '').trim();
@@ -451,12 +459,18 @@ export const getAdministrativeQueueRequestResult = async (req, res) => {
     const userPrincipalName = data.userPrincipalName ?? data.UserPrincipalName;
     const emailFromFile =
       data.email ?? data.Email ?? data.mail ?? data.Mail;
+    const displayNameRaw = data.displayName ?? data.DisplayName;
+    const displayName =
+      typeof displayNameRaw === 'string' && displayNameRaw.trim()
+        ? displayNameRaw.trim()
+        : undefined;
     return res.status(200).json({
       status: st,
       message,
       requestId: (data.requestId ?? data.RequestId) ?? requestId,
       processedAt: processedAt || undefined,
       queueAction: queueAction || undefined,
+      displayName,
       samAccountName: samAccountName || undefined,
       userPrincipalName:
         typeof userPrincipalName === 'string' && userPrincipalName.trim()
@@ -468,7 +482,12 @@ export const getAdministrativeQueueRequestResult = async (req, res) => {
           : undefined,
     });
   } catch (e) {
-    if (e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) {
+    const rawMsg = e?.message || String(e);
+    const low = String(rawMsg).toLowerCase();
+    const looksMissingResultado =
+      (e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) ||
+      (low.includes('no se encuentra') && low.includes('resultado-') && low.includes('.json'));
+    if (looksMissingResultado) {
       return res.status(200).json({
         status: 'pending',
         message:
@@ -476,13 +495,15 @@ export const getAdministrativeQueueRequestResult = async (req, res) => {
         requestId,
       });
     }
-    const msg = e?.message || String(e);
-    console.error('[AD-Queue] leer resultado:', msg);
+    console.error('[AD-Queue] leer resultado:', e);
     const isAccess =
       e && (e.code === 'EACCES' || e.code === 'EPERM' || e.code === 'EBUSY');
+    const safeMsg = formatPrecheckOrMixedFailureDetail(e);
     const detail = isAccess
-      ? `${msg} Compruebe que la cuenta del proceso Node puede leer la carpeta configurada en AD_QUEUE_RESULTS_UNC (o resultados bajo AD_QUEUE_UNC).`
-      : msg;
+      ? `${safeMsg} Compruebe que la cuenta del proceso Node puede leer la carpeta configurada en AD_QUEUE_RESULTS_UNC (o resultados bajo AD_QUEUE_UNC).`
+      : isUncFilesystemNoiseMessage(rawMsg)
+        ? safeMsg
+        : rawMsg;
     return res.status(500).json({
       error: 'Error al leer resultado',
       message: detail,

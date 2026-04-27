@@ -75,12 +75,29 @@ export interface AdQueueConnectionTestResult {
 /** GET .../administrative/queue-requests/:requestId/result — estado tras ejecutar el script PS. */
 export type AdQueueJobStatus = 'pending' | 'success' | 'error';
 
+/** Una fila devuelta por POST .../administrative/bulk (encolado por fila). */
+export interface AdministrativeBulkRowResult {
+  row: number;
+  status: string;
+  userPrincipalName?: string;
+  displayName?: string;
+  requestId?: string;
+  proposedUserName?: string;
+  queueAction?: 'create' | 'updateByEmployeeId';
+  message?: string;
+  code?: string;
+  /** DN de la OU de destino cuando el backend lo incluye (alineado con AdQueueCreationAccepted). */
+  adOrganizationalUnitDn?: string;
+}
+
 export interface AdQueueRequestResult {
   status: AdQueueJobStatus;
   message: string;
   requestId: string;
   processedAt?: string;
   queueAction?: string;
+  /** Nombre para mostrar en AD tras procesar el script (opcional en JSON antiguos). */
+  displayName?: string;
   samAccountName?: string;
   /** UPN final en AD (tras resolver colisiones en el script PowerShell). */
   userPrincipalName?: string;

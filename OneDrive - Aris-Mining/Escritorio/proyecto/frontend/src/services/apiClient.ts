@@ -170,7 +170,7 @@ export function getAxiosErrorMessage(error: unknown, fallback: string): string {
 
 /**
  * Estado del job en AD: lee resultado-{requestId}.json (carpeta resultados del UNC).
- * Incluye samAccountName, userPrincipalName y email finales cuando status === 'success'.
+ * Incluye displayName, samAccountName, userPrincipalName y email finales cuando status === 'success'.
  */
 export const getAdministrativeQueueRequestResult = async (
   requestId: string
@@ -196,6 +196,7 @@ export const getAdministrativeQueueRequestResult = async (
         requestId: pickString(o, 'requestId', 'RequestId') ?? requestId,
         processedAt: pickString(o, 'processedAt', 'ProcessedAt'),
         queueAction: pickString(o, 'queueAction', 'QueueAction'),
+        displayName: pickString(o, 'displayName', 'DisplayName'),
         samAccountName: pickString(o, 'samAccountName', 'SamAccountName'),
         userPrincipalName: pickString(
           o,

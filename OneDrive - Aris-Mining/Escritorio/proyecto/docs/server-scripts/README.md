@@ -2,7 +2,7 @@
 
 ## `Process-AdUserQueue.ps1`
 
-El backend Node escribe archivos `pendiente-{uuid}.json` en la ruta UNC definida por `AD_QUEUE_UNC`. Este script debe ejecutarse **en el servidor** (o en un equipo con módulo **ActiveDirectory** y permisos para crear usuarios en la OU).
+El backend Node escribe archivos `pendiente-{uuid}.json` en la ruta UNC definida por `AD_QUEUE_UNC`. Este script debe ejecutarse **en el servidor** (o en un equipo con módulo **ActiveDirectory** y permisos para crear usuarios en la OU). Al tomar cada archivo, el script lo renombra momentáneamente a `procesando-{uuid}.json` en la misma carpeta (menos carreras con UNC y `-Continuous`); no ejecute dos instancias del script sobre la misma cola.
 
 **Recomendado (baja latencia):** modo continuo `-Continuous`: una sola tarea programada **al iniciar el sistema** deja el script en bucle revisando la cola cuando está vacía (por defecto cada **300 ms**). Así las solicitudes se procesan en segundos.
 

@@ -29,3 +29,9 @@ build/
 
 # Cursor
 .cursor/
+
+# Informes y estado locales de pruebas (no versionar)
+docs/INFORME_PRUEBAS*.md
+docs/INFORME_TECNICO_PRUEBAS.md
+docs/.informe-pruebas-estado.json
+/pruebas/

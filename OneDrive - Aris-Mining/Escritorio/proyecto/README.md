@@ -2,6 +2,40 @@
 
 Sistema para crear **usuarios operativos en Microsoft 365** (Microsoft Graph) y **usuarios administrativos en Active Directory local** mediante una **cola de archivos JSON** en una carpeta compartida (SMB/UNC) escrita por Node; un **script PowerShell** en el servidor (Programador de tareas) ejecuta `New-ADUser` y elimina cada solicitud procesada. Front-end en React+TypeScript y backend en Node.js/Express (**el PC que ejecuta Node necesita permiso de escritura en la UNC**; suele ser Windows en red corporativa).
 
+## Índice
+
+- [Checklist: entorno y despliegue](#checklist-entorno-y-despliegue) — clonar, `.env` (desde los `.env.example`) y pasos a producción
+- [Estructura del proyecto](#estructura-del-proyecto)
+- [Características principales](#características-principales)
+- [Requisitos previos](#requisitos-previos)
+- [Instalación y detalle de variables](#instalación-y-detalle-de-variables) — `backend/.env` y `frontend/.env`
+- [Plantillas Excel (SharePoint)](#plantillas-excel-estilos-y-dónde-guardarlas)
+- [Ejecución (desarrollo y producción)](#ejecución)
+- [Flujos y troubleshooting](#flujo-de-creación-de-usuario)
+- [API y referencia](#api-endpoints)
+- [Seguridad y tecnologías](#seguridad)
+
+## Checklist: entorno y despliegue
+
+Los archivos **`.env` no se versionan** (están en `.gitignore`). Toda la plantilla de variables va en:
+
+| Ubicación | Origen (copiar y renombrar) |
+| --- | --- |
+| `backend/.env` | `backend/.env.example` |
+| `frontend/.env` | `frontend/.env.example` |
+
+**Windows (cmd/PowerShell):** `copy backend\.env.example backend\.env` y `copy frontend\.env.example frontend\.env`.
+
+1. **Clonar** el repositorio.
+2. **Instalar dependencias:** `cd backend` → `npm install`; `cd ../frontend` → `npm install`.
+3. **Backend —** crear `backend/.env` desde el example. Mínimo habitual: `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `PORT`, `NODE_ENV`. Si usas **usuarios administrativos (cola AD)**, añade `AD_QUEUE_UNC`, `AD_QUEUE_EMAIL_DOMAIN` y el resto según comentarios en el example. Reiniciar el proceso de Node tras cada cambio.
+4. **Frontend —** crear `frontend/.env` desde el example. Mínimo: `VITE_API_BASE_URL` (p. ej. `/api` con proxy de Vite o `http://localhost:5000/api`), `VITE_AZURE_TENANT_ID`, `VITE_AZURE_CLIENT_ID`, `VITE_AZURE_LOGI_GROUP_ID`. Opcional: `VITE_PLANTILLA_OPERARIOS_URL` y `VITE_PLANTILLA_ADMINISTRATIVOS_URL` (URLs `https` a plantillas en SharePoint). Reiniciar `npm run dev` o **volver a hacer build** en producción para que Vite inyecte las `VITE_*`.
+5. **Desarrollo:** dos terminales — `cd backend && npm run dev` (por defecto `http://localhost:5000`); `cd frontend && npm run dev` (puerto según Vite, a veces 5173 o 3000).
+6. **Producción — backend:** variables en el entorno del servidor (PM2, servicio de Windows, Docker, etc.) y `cd backend && npm start` o el comando acordado.
+7. **Producción — frontend:** las `VITE_*` deben existir **en el momento de** `npm run build`; luego se sirve `frontend/dist` con Nginx, IIS, Azure Static Web Apps u otro servidor estático. El bundle ya lleva la configuración; no basta con editar un `.env` en el hosting si no se reconstruye.
+
+La sección [Instalación y detalle de variables](#instalación-y-detalle-de-variables) amplía esto con ejemplos y la parte de **plantillas SharePoint** está [más abajo](#plantillas-excel-estilos-y-dónde-guardarlas).
+
 ## Estructura del Proyecto
 
 ```
@@ -48,7 +82,9 @@ proyecto/
 - Node.js 18 o superior
 - Navegador moderno (Chrome, Firefox, Edge, Safari)
 
-## Instalación
+## Instalación y detalle de variables
+
+> Resumen: copiar `backend/.env.example` → `backend/.env` y `frontend/.env.example` → `frontend/.env` (ver [checklist](#checklist-entorno-y-despliegue)).
 
 ### Backend
 
@@ -115,6 +151,8 @@ Si pones solo `http://localhost:5000` sin `/api`, el cliente intenta corregirlo 
 Si no se definen esas variables, la app sigue usando los archivos por defecto en **`frontend/public/plantilla-*.xlsx`**.
 
 ## Ejecución
+
+Véase el [Checklist: entorno y despliegue](#checklist-entorno-y-despliegue) para el orden de pasos. Comandos habituales:
 
 ### Desarrollo
 
