@@ -18,8 +18,10 @@ Sistema para crear **usuarios operativos en Microsoft 365** (Microsoft Graph) y 
 Documentación complementaria en el repo:
 
 - [`docs/server-scripts/README.md`](docs/server-scripts/README.md) — script PowerShell de la cola AD.
-- [`docs/diagramas/README.md`](docs/diagramas/README.md) — índice de diagramas Mermaid (la carpeta puede estar excluida del control de versiones; ver `.gitignore`).
+- Diagramas técnicos (Mermaid/PNG) — se mantienen como artefactos locales de apoyo y **no se versionan** por política del repositorio (ver `.gitignore`).
 - [`frontend/public/branding/README.md`](frontend/public/branding/README.md) — logo y marca en la SPA.
+
+> Nota: los diagramas se mantienen localmente y Git los ignora por configuración del repositorio.
 
 ## Checklist: entorno y despliegue
 
@@ -41,19 +43,6 @@ Los archivos **`.env` no se versionan** (están en `.gitignore`). Toda la planti
 7. **Producción — frontend:** las `VITE_*` deben existir **en el momento de** `npm run build`; luego se sirve `frontend/dist` con Nginx, IIS, Azure Static Web Apps u otro servidor estático. El bundle ya lleva la configuración; no basta con editar un `.env` en el hosting si no se reconstruye.
 
 La sección [Instalación y detalle de variables](#instalación-y-detalle-de-variables) amplía esto con ejemplos y la parte de **plantillas SharePoint** está [más abajo](#plantillas-excel-estilos-y-dónde-guardarlas).
-
-## Estructura del Proyecto
-
-```
-proyecto/
-├── frontend/             # Aplicación React + TypeScript (Vite)
-├── backend/              # API Node.js + Express + Microsoft Graph
-├── docs/
-│   ├── server-scripts/   # Script PowerShell para consumir la cola AD (servidor)
-│   └── diagramas/        # Diagramas Mermaid/PNG locales (excluidos en .gitignore)
-├── <carpeta-branding>/   # Material de marca opcional del cliente (nombre variable por entorno)
-└── README.md             # Este archivo (punto de entrada)
-```
 
 ## Características principales
 
