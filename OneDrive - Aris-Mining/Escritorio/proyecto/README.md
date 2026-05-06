@@ -51,7 +51,7 @@ proyecto/
 ├── docs/
 │   ├── server-scripts/   # Script PowerShell para consumir la cola AD (servidor)
 │   └── diagramas/        # Diagramas Mermaid/PNG locales (excluidos en .gitignore)
-├── Aris/                 # Material de marca opcional del cliente
+├── <carpeta-branding>/   # Material de marca opcional del cliente (nombre variable por entorno)
 └── README.md             # Este archivo (punto de entrada)
 ```
 
@@ -118,8 +118,8 @@ PORT=5000
 NODE_ENV=development
 
 # Active Directory — cola SMB; ver backend/.env.example
-AD_QUEUE_UNC=\\10.10.11.9\scripts\pending
-AD_QUEUE_EMAIL_DOMAIN=empresa.co
+AD_QUEUE_UNC=\\SERVIDOR\RECURSO_COMPARTIDO\pending
+AD_QUEUE_EMAIL_DOMAIN=empresa.example.com
 # Opcional: atributo Company en AD (campo empresa en el JSON)
 # AD_QUEUE_COMPANY=Mi Empresa
 ```
@@ -209,7 +209,7 @@ npm run build
 
 2. El sistema genera automáticamente:
    - **Display Name**: `Nombre + Primer Apellido`
-   - **Correo corporativo**: `nombre.apellido@aris-mining-co`
+   - **Correo corporativo**: `nombre.apellido@empresa.example.com`
 
 3. Al enviar el formulario:
    - El backend valida la unicidad del correo en Microsoft 365
@@ -217,7 +217,7 @@ npm run build
    - Si también existe, añade un sufijo numérico incremental
 
 4. El usuario se crea en Microsoft 365 con:
-   - Contraseña inicial: `Aris1234*`
+   - Contraseña inicial: `<CONTRASENA_TEMPORAL>`
    - Cambio de contraseña obligatorio en primer inicio
    - Sin licencias asignadas
    - Puesto y departamento configurados
@@ -268,9 +268,9 @@ Crea un nuevo usuario operativo en Microsoft 365.
 ```json
 {
   "id": "user-id-from-m365",
-  "userPrincipalName": "juan.perez@aris-mining-co",
+  "userPrincipalName": "juan.perez@empresa.example.com",
   "displayName": "Juan Pérez",
-  "email": "juan.perez@aris-mining-co",
+  "email": "juan.perez@empresa.example.com",
   "message": "Usuario creado exitosamente en Microsoft 365"
 }
 ```
@@ -288,9 +288,9 @@ Encola la creación corporativa en Active Directory escribiendo **`pendiente-{re
 {
   "requestId": "uuid",
   "message": "Solicitud encolada...",
-  "queuePath": "\\\\servidor\\share\\pending\\pendiente-uuid.json",
+  "queuePath": "\\\\SERVIDOR\\RECURSO_COMPARTIDO\\pending\\pendiente-uuid.json",
   "proposedUserName": "juan.perez",
-  "userPrincipalName": "juan.perez@empresa.co",
+  "userPrincipalName": "juan.perez@empresa.example.com",
   "displayName": "Juan Pérez"
 }
 ```
@@ -333,7 +333,7 @@ Por cada fila válida se aplica la misma lógica que **`POST /api/users/administ
       "row": 3,
       "status": "success",
       "requestId": "uuid",
-      "userPrincipalName": "juan.perez@empresa.co",
+      "userPrincipalName": "juan.perez@empresa.example.com",
       "displayName": "Juan Pérez",
       "proposedUserName": "juan.perez"
     },
