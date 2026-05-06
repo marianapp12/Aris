@@ -1,8 +1,10 @@
 # Carpeta de marca (logo)
 
-**Ubicación en el proyecto:** `frontend/public/branding/`
+Logo y activos estáticos de marca para la SPA Aris Mining.
 
-Los archivos de esta carpeta se sirven en la raíz del sitio con la URL **`/branding/nombre-del-archivo`**. Así no dependéis de rutas largas ni del código fuente al cambiar el logo.
+**Ubicación:** `frontend/public/branding/`
+
+Los archivos se publican en la raíz del sitio como **`/branding/nombre-del-archivo`**, sin depender del código fuente.
 
 ## Qué archivo usar
 
@@ -16,3 +18,7 @@ Los archivos de esta carpeta se sirven en la raíz del sitio con la URL **`/bran
 - Teal principal: `#067996`
 - Fondo página: `#E6EDF5`
 - Texto navy: `#122A42`
+
+## Documentación del proyecto
+
+Instalación, variables de entorno, API y despliegue: [`README.md`](../../../README.md) (raíz del repositorio).

@@ -15,6 +15,12 @@ Sistema para crear **usuarios operativos en Microsoft 365** (Microsoft Graph) y 
 - [API y referencia](#api-endpoints)
 - [Seguridad y tecnologías](#seguridad)
 
+Documentación complementaria en el repo:
+
+- [`docs/server-scripts/README.md`](docs/server-scripts/README.md) — script PowerShell de la cola AD.
+- [`docs/diagramas/README.md`](docs/diagramas/README.md) — índice de diagramas Mermaid (la carpeta puede estar excluida del control de versiones; ver `.gitignore`).
+- [`frontend/public/branding/README.md`](frontend/public/branding/README.md) — logo y marca en la SPA.
+
 ## Checklist: entorno y despliegue
 
 Los archivos **`.env` no se versionan** (están en `.gitignore`). Toda la plantilla de variables va en:
@@ -28,7 +34,7 @@ Los archivos **`.env` no se versionan** (están en `.gitignore`). Toda la planti
 
 1. **Clonar** el repositorio.
 2. **Instalar dependencias:** `cd backend` → `npm install`; `cd ../frontend` → `npm install`.
-3. **Backend —** crear `backend/.env` desde el example. Mínimo habitual: `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `PORT`, `NODE_ENV`. Si usas **usuarios administrativos (cola AD)**, añade `AD_QUEUE_UNC`, `AD_QUEUE_EMAIL_DOMAIN` y el resto según comentarios en el example. Reiniciar el proceso de Node tras cada cambio.
+3. **Backend —** crear `backend/.env` desde el example. Incluye credenciales Azure, cola AD (`AD_QUEUE_*`), OU (`AD_QUEUE_OU_DN`), empresa (`AD_QUEUE_COMPANY`), grupos por sede (`GROUP_*`) y grupos comunes operativos (`OPERATIONAL_COMMON_GROUP_IDS`). Variables opcionales avanzadas (LDAP, rutas extra de cola, omitir prechequeo Graph, etc.) están documentadas en [`docs/MANUAL_TECNICO_PROYECTO.md`](docs/MANUAL_TECNICO_PROYECTO.md). Reiniciar Node tras cada cambio.
 4. **Frontend —** crear `frontend/.env` desde el example. Mínimo: `VITE_API_BASE_URL` (p. ej. `/api` con proxy de Vite o `http://localhost:5000/api`), `VITE_AZURE_TENANT_ID`, `VITE_AZURE_CLIENT_ID`, `VITE_AZURE_LOGI_GROUP_ID`. Opcional: `VITE_PLANTILLA_OPERARIOS_URL` y `VITE_PLANTILLA_ADMINISTRATIVOS_URL` (URLs `https` a plantillas en SharePoint). Reiniciar `npm run dev` o **volver a hacer build** en producción para que Vite inyecte las `VITE_*`.
 5. **Desarrollo:** dos terminales — `cd backend && npm run dev` (por defecto `http://localhost:5000`); `cd frontend && npm run dev` (puerto según Vite, a veces 5173 o 3000).
 6. **Producción — backend:** variables en el entorno del servidor (PM2, servicio de Windows, Docker, etc.) y `cd backend && npm start` o el comando acordado.
@@ -40,10 +46,13 @@ La sección [Instalación y detalle de variables](#instalación-y-detalle-de-var
 
 ```
 proyecto/
-├── frontend/          # Aplicación React + TypeScript
-├── backend/           # API Node.js + Express con integración Microsoft Graph
-├── docs/server-scripts/  # Script PowerShell de ejemplo para el servidor (cola AD)
-└── README.md          # Este archivo
+├── frontend/             # Aplicación React + TypeScript (Vite)
+├── backend/              # API Node.js + Express + Microsoft Graph
+├── docs/
+│   ├── server-scripts/   # Script PowerShell para consumir la cola AD (servidor)
+│   └── diagramas/        # Diagramas Mermaid/PNG locales (excluidos en .gitignore)
+├── Aris/                 # Material de marca opcional del cliente
+└── README.md             # Este archivo (punto de entrada)
 ```
 
 ## Características principales

@@ -1,5 +1,21 @@
 # Scripts en el servidor (Active Directory)
 
+Documentación del consumidor de la cola JSON (`pendiente-*.json`) en Active Directory. Proyecto principal: [`README.md`](../../README.md).
+
+## Contenido
+
+- [Process-AdUserQueue.ps1](#process-aduserqueueps1)
+- [Si la interfaz «tarda ~5 minutos» o más](#si-la-interfaz-tarda-5-minutos-o-más)
+- [Requisitos](#requisitos)
+- [Parámetros del script (resumen)](#parámetros-del-script-resumen)
+- [Ejemplo de Tarea programada (modo continuo, recomendado)](#ejemplo-de-tarea-programada-modo-continuo-recomendado)
+- [Tarea periódica (sin modo continuo)](#tarea-periódica-sin-modo-continuo)
+- [OU, correo y cédula](#ou-correo-y-cédula)
+- [Plantilla Excel administrativos](#plantilla-excel-administrativos)
+- [Errores](#errores)
+- [El editor marca muchos errores en el `.ps1`](#el-editor-marca-muchos-errores-en-el-ps1)
+- [Contraseña](#contraseña)
+
 ## `Process-AdUserQueue.ps1`
 
 El backend Node escribe archivos `pendiente-{uuid}.json` en la ruta UNC definida por `AD_QUEUE_UNC`. Este script debe ejecutarse **en el servidor** (o en un equipo con módulo **ActiveDirectory** y permisos para crear usuarios en la OU). Al tomar cada archivo, el script lo renombra momentáneamente a `procesando-{uuid}.json` en la misma carpeta (menos carreras con UNC y `-Continuous`); no ejecute dos instancias del script sobre la misma cola.
