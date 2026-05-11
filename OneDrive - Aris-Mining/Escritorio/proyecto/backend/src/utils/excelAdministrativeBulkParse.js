@@ -75,6 +75,7 @@ const HEADER_SYNONYMS = {
   ciudadysede: 'ciudad',
   ubicacion: 'ciudad',
   codigopostal: 'codigoPostal',
+  centrodecostos: 'codigoPostal',
   cp: 'codigoPostal',
   zip: 'codigoPostal',
   postal: 'codigoPostal',

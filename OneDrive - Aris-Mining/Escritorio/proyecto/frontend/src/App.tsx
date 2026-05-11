@@ -3,7 +3,10 @@
  * Mantiene estados de carga y error de autorización sin romper el orden de hooks (spinner MSAL antes de returns condicionales).
  */
 import React, { useEffect, useMemo, useState } from 'react';
-import CreateUserForm, { INITIAL_PASSWORD_M365 } from './components/CreateUserForm';
+import CreateUserForm, {
+  INITIAL_PASSWORD_ADMIN_AD,
+  INITIAL_PASSWORD_M365,
+} from './components/CreateUserForm';
 import './App.css';
 import './components/auth/login.css';
 import { useIsAuthenticated, useMsal } from '@azure/msal-react';
@@ -160,15 +163,30 @@ const App: React.FC = () => {
           <div className="page-header">
             <h1 className="page-title">Creación de usuarios</h1>
             <p className="page-description">
-              Use las pestañas del formulario para elegir el tipo de alta:{' '}
-              <strong>Operativo (Microsoft 365)</strong> crea la cuenta directamente en el inquilino
-              de Microsoft 365; la contraseña inicial asignada es{' '}
-              <strong>{INITIAL_PASSWORD_M365}</strong> y el usuario deberá cambiarla en el primer
-              inicio de sesión (sin licencia por defecto).{' '}
-              <strong>Administrativo (Active Directory)</strong> encola la solicitud para que el
-              servidor cree el usuario en AD local (sincronización con M365 vía Azure AD Connect); la
-              contraseña inicial la define el script en el servidor.
+              Selecciona el tipo de alta y completa el formulario.
             </p>
+            <div className="flow-summary-grid" aria-label="Resumen de tipos de alta">
+              <article className="flow-summary-card">
+                <h2 className="flow-summary-title">Operativo (Microsoft 365)</h2>
+                <p className="flow-summary-text">
+                  Crea la cuenta directamente en Microsoft 365.
+                </p>
+                <p className="flow-summary-note">
+                  Contraseña inicial: <strong>{INITIAL_PASSWORD_M365}</strong> (cambio obligatorio al
+                  primer inicio).
+                </p>
+              </article>
+              <article className="flow-summary-card">
+                <h2 className="flow-summary-title">Administrativo (Active Directory)</h2>
+                <p className="flow-summary-text">
+                  Encola la solicitud para creación en AD local y sincronización posterior a M365.
+                </p>
+                <p className="flow-summary-note">
+                  Contraseña inicial: <strong>{INITIAL_PASSWORD_ADMIN_AD}</strong> (cambio obligatorio
+                  al primer inicio).
+                </p>
+              </article>
+            </div>
           </div>
 
           <div className="form-card">

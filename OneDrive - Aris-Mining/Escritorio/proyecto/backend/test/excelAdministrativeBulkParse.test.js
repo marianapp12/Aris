@@ -11,6 +11,7 @@ describe('normalizeExcelHeaderKey', () => {
   it('normaliza tildes y espacios', () => {
     expect(normalizeExcelHeaderKey('  Código Postal  ')).toBe('codigopostal');
     expect(normalizeExcelHeaderKey('Primer_Nombre')).toBe('primernombre');
+    expect(normalizeExcelHeaderKey('Centro de costos')).toBe('centrodecostos');
   });
 });
 
@@ -34,6 +35,18 @@ describe('mapRawRowToAdministrativeFields', () => {
     expect(row.PrimerNombre).toBe('Carlos');
     expect(row.Cedula).toBe('12345678');
     expect(row.Ciudad).toBe('Medellín');
+    expect(row.CodigoPostal).toBe('050021');
+  });
+
+  it('mapea encabezado Centro de costos a CodigoPostal', () => {
+    const row = mapRawRowToAdministrativeFields({
+      'Primer nombre': 'Carlos',
+      Cédula: '12345678',
+      Ciudad: 'Medellín',
+      'Centro de costos': '050021',
+      Puesto: 'Contador',
+      Departamento: 'Finanzas',
+    });
     expect(row.CodigoPostal).toBe('050021');
   });
 });

@@ -21,6 +21,18 @@ describe('mapRawRowToOperationalFields', () => {
     expect(row.CodigoPostal).toBe('1234567');
   });
 
+  it('mapea encabezado Centro de costos a CodigoPostal', () => {
+    const row = mapRawRowToOperationalFields({
+      Nombre: 'Ana',
+      'Primer apellido': 'López',
+      Sede: 'Segovia',
+      'Centro de costos': '1234567',
+      Puesto: 'Operario',
+      Departamento: 'Mina',
+    });
+    expect(row.CodigoPostal).toBe('1234567');
+  });
+
   it('trata Apellido_1 de SheetJS como segundo apellido', () => {
     const row = mapRawRowToOperationalFields({
       Apellido: 'Pérez',
@@ -57,5 +69,17 @@ describe('parseOperationalBulkSheet', () => {
     expect(firstDataExcelRow).toBeGreaterThanOrEqual(2);
     expect(rows[0].PrimerNombre).toBe('Luis');
     expect(rows[0].Sede).toBe('Segovia');
+  });
+
+  it('acepta columna Centro de costos en encabezados', () => {
+    const wb = XLSX.utils.book_new();
+    const sheet = XLSX.utils.aoa_to_sheet([
+      ['Nombre', 'Apellido', 'Puesto', 'Departamento', 'Sede', 'Centro de costos'],
+      ['Luis', 'Martinez', 'Técnico', 'Planta', 'Segovia', '1234567'],
+    ]);
+    XLSX.utils.book_append_sheet(wb, sheet, 'H1');
+    const { rows } = parseOperationalBulkSheet(sheet);
+    expect(rows.length).toBeGreaterThanOrEqual(1);
+    expect(rows[0].CodigoPostal).toBe('1234567');
   });
 });

@@ -32,6 +32,7 @@ const OPERATIONAL_HEADER_SYNONYMS = {
   ubicacion: 'sede',
   oficina: 'sede',
   codigopostal: 'codigoPostal',
+  centrodecostos: 'codigoPostal',
   cp: 'codigoPostal',
   zip: 'codigoPostal',
   postal: 'codigoPostal',

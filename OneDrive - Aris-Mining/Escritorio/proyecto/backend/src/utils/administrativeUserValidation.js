@@ -5,14 +5,14 @@ import {
 
 const onlyLettersRegex = /[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s-]/;
 const hasInvalidCharsForName = (value) => value && onlyLettersRegex.test(value);
-/** Cédula / ID: alfanumérico y guion, 5–32 caracteres (obligatorio en flujo administrativo). */
+/** Cédula / ID empleado: solo dígitos, 5–32 (obligatorio en flujo administrativo). */
 export const EMPLOYEE_ID_MIN_LENGTH = 5;
 export const EMPLOYEE_ID_MAX_LENGTH = 32;
 const employeeIdRegex = new RegExp(
-  `^[0-9A-Za-z-]{${EMPLOYEE_ID_MIN_LENGTH},${EMPLOYEE_ID_MAX_LENGTH}}$`
+  `^[0-9]{${EMPLOYEE_ID_MIN_LENGTH},${EMPLOYEE_ID_MAX_LENGTH}}$`
 );
 
-/** Alineado con flujo operativo M365 (código postal). */
+/** Alineado con flujo operativo M365 (centro de costos en UI; body `postalCode`). */
 export const ADMIN_POSTAL_MIN = 4;
 export const ADMIN_POSTAL_MAX = 10;
 
@@ -59,25 +59,17 @@ export function validateAdministrativePayload(body) {
       ok: false,
       status: 400,
       error: 'Validación fallida',
-      message: `La cédula / ID debe ser alfanumérica (guiones permitidos), entre ${EMPLOYEE_ID_MIN_LENGTH} y ${EMPLOYEE_ID_MAX_LENGTH} caracteres`,
+      message: `La cédula / ID debe contener solo números, entre ${EMPLOYEE_ID_MIN_LENGTH} y ${EMPLOYEE_ID_MAX_LENGTH} dígitos`,
     };
   }
 
   const postalNorm = normalizeAdministrativePostalCode(postalCode);
-  if (!postalNorm) {
+  if (postalNorm && !isValidAdministrativePostalDigits(postalNorm)) {
     return {
       ok: false,
       status: 400,
       error: 'Validación fallida',
-      message: 'El código postal (postalCode) es obligatorio',
-    };
-  }
-  if (!isValidAdministrativePostalDigits(postalNorm)) {
-    return {
-      ok: false,
-      status: 400,
-      error: 'Validación fallida',
-      message: `Código postal: solo números, entre ${ADMIN_POSTAL_MIN} y ${ADMIN_POSTAL_MAX} dígitos`,
+      message: `Centro de costos: solo números, entre ${ADMIN_POSTAL_MIN} y ${ADMIN_POSTAL_MAX} dígitos`,
     };
   }
 

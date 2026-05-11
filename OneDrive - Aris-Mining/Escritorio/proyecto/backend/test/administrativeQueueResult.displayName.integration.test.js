@@ -15,7 +15,8 @@ describe('GET /api/users/administrative/queue-requests/:id/result (displayName)'
     readSpy.mockResolvedValue(
       JSON.stringify({
         status: 'success',
-        message: 'Usuario creado en Active Directory.',
+        message:
+          'Usuario administrativo creado en Active Directory. Contraseña inicial: Nuevo12*2026. Debe cambiarla en el primer inicio de sesión.',
         requestId: UUID,
         displayName: 'Ana María Gómez',
         samAccountName: 'agomez',

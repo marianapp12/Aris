@@ -26,7 +26,7 @@ const rows = [
     'Departamento',
     'Cedula',
     'Ciudad',
-    'Codigo postal',
+    'Centro de costos',
   ],
   ['Juan', '', 'Pérez', '', 'Analista', 'TI', '12345678', 'Medellín', '050021'],
 ];

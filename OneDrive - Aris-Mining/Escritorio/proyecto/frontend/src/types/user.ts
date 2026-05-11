@@ -6,7 +6,7 @@ export interface CreateUserRequest {
   department: string;
   /** Solo usuarios operativos: una de OPERATIONAL_SEDE_OPTIONS */
   sede?: string;
-  /** Código postal obligatorio: operativos (M365) y administrativos (cola AD). Solo dígitos (4–10). Body: `postalCode`. */
+  /** Centro de costos (UI) opcional en operativos (M365) y administrativos (cola AD). Solo dígitos (4–10) cuando se informa. Body: `postalCode`. */
   postalCode?: string;
   /** Cédula / ID empleado (pestaña administrativa, opcional) */
   employeeId?: string;
@@ -123,7 +123,7 @@ export interface UserFormData {
   departamento: string;
   /** Solo pestaña operativa (obligatorio al crear operativo). */
   sede: string;
-  /** Código postal operativo: solo números, 4–10 dígitos. */
+  /** Centro de costos (operativo): solo números, 4–10 dígitos. */
   postalCode: string;
   cedula: string;
   /** Administrativo: sede elegida (mismo texto que en AD City); operativo puede quedar vacío. */

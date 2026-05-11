@@ -110,4 +110,4 @@ Los JSON que fallen se mueven a la subcarpeta `error\` junto a un `.log` con el 
 
 ### Contraseña
 
-El script del repo usa por defecto la contraseña fija **Aris1234*** (alineada con usuarios operativos M365); cámbiela en `New-AdSafePassword` si su política lo exige. Si el backend envía `queueMetadata.initialPasswordFromQueue` (`AD_QUEUE_INITIAL_PASSWORD` en Node), puede adaptar el script para usarla; evite contraseñas en claro salvo política explícita.
+El script del repo usa por defecto la contraseña fija **Nuevo12*2026** para administrativos; cámbiela en `New-AdSafePassword` si su política lo exige. Si el backend envía `queueMetadata.initialPasswordFromQueue` (`AD_QUEUE_INITIAL_PASSWORD` en Node), puede adaptar el script para usarla; evite contraseñas en claro salvo política explícita.

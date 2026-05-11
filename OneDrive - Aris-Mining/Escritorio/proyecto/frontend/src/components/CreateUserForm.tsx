@@ -114,7 +114,7 @@ function plantillaOrigenNote(
 const EMPLOYEE_ID_MIN = 5;
 const EMPLOYEE_ID_MAX = 32;
 
-/** Alineado con operationalUsersController (código postal operativo). */
+/** Alineado con operationalUsersController (centro de costos opcional en operativo; body `postalCode`). */
 const OPERATIONAL_POSTAL_MIN = 4;
 const OPERATIONAL_POSTAL_MAX = 10;
 
@@ -122,7 +122,6 @@ const OPERATIONAL_POSTAL_MAX = 10;
 const NAME_AND_JOB_MAX = 50;
 
 const NON_NAME_CHARS = /[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s-]/g;
-const NON_EMPLOYEE_ID_CHARS = /[^0-9A-Za-z-]/g;
 
 /**
  * Filtra entrada en vivo: solo caracteres permitidos y longitud máxima por campo
@@ -139,7 +138,7 @@ function sanitizeFormFieldInput(name: keyof UserFormData, raw: string): string {
     case 'departamento':
       return raw.replace(NON_NAME_CHARS, '').slice(0, NAME_AND_JOB_MAX);
     case 'cedula':
-      return raw.replace(NON_EMPLOYEE_ID_CHARS, '').slice(0, EMPLOYEE_ID_MAX);
+      return raw.replace(/\D/g, '').slice(0, EMPLOYEE_ID_MAX);
     case 'postalCode':
       return raw.replace(/\s/g, '').replace(/\D/g, '').slice(0, OPERATIONAL_POSTAL_MAX);
     case 'ciudad':
@@ -158,7 +157,7 @@ const FORM_FIELD_LABELS: Record<keyof UserFormData, string> = {
   puesto: 'Puesto',
   departamento: 'Departamento',
   sede: 'Sede',
-  postalCode: 'Código postal',
+  postalCode: 'Centro de costos',
   cedula: 'Cédula / ID',
   ciudad: 'Ciudad / sede',
 };
@@ -168,6 +167,8 @@ const CAMPO_OBLIGATORIO = ' (campo Obligatorio)';
 
 /** Misma contraseña inicial que graphUserService.js (operativos / Microsoft 365). */
 export const INITIAL_PASSWORD_M365 = 'Aris1234*';
+/** Contraseña inicial de administrativos (aplicada por el script de AD en servidor). */
+export const INITIAL_PASSWORD_ADMIN_AD = 'Nuevo12*2026';
 
 type UserCreationType = 'operational' | 'administrative';
 
@@ -750,11 +751,11 @@ const CreateUserForm = () => {
       if (!t) {
         return userCreationType === 'administrative' ? 'La cédula / ID es obligatoria' : '';
       }
-      if (t.length < EMPLOYEE_ID_MIN || t.length > EMPLOYEE_ID_MAX) {
-        return `La cédula / ID debe tener entre ${EMPLOYEE_ID_MIN} y ${EMPLOYEE_ID_MAX} caracteres`;
+      if (!/^\d+$/.test(t)) {
+        return 'La cédula / ID solo puede contener números';
       }
-      if (!/^[0-9A-Za-z-]+$/.test(t)) {
-        return 'Solo alfanuméricos y guiones';
+      if (t.length < EMPLOYEE_ID_MIN || t.length > EMPLOYEE_ID_MAX) {
+        return `La cédula / ID debe tener entre ${EMPLOYEE_ID_MIN} y ${EMPLOYEE_ID_MAX} dígitos`;
       }
       return '';
     }
@@ -771,7 +772,7 @@ const CreateUserForm = () => {
     if (name === 'postalCode') {
       const t = value.replace(/\s/g, '').trim();
       if (!t) {
-        return 'El código postal es obligatorio';
+        return '';
       }
       if (
         !/^\d+$/.test(t) ||
@@ -823,7 +824,6 @@ const CreateUserForm = () => {
       'apellido1',
       'puesto',
       'departamento',
-      'postalCode',
     ];
     if (userCreationType === 'administrative') {
       required.push('ciudad');
@@ -1085,14 +1085,14 @@ const CreateUserForm = () => {
         ...(userCreationType === 'operational'
           ? {
               sede: formData.sede.trim(),
-              postalCode: formData.postalCode.replace(/\s/g, '').trim(),
+              postalCode: formData.postalCode.replace(/\s/g, '').trim() || undefined,
             }
           : {}),
         ...(userCreationType === 'administrative'
           ? {
               employeeId: formData.cedula.trim(),
               city: formData.ciudad.trim(),
-              postalCode: formData.postalCode.replace(/\s/g, '').trim(),
+              postalCode: formData.postalCode.replace(/\s/g, '').trim() || undefined,
             }
           : {}),
       };
@@ -1669,12 +1669,6 @@ const CreateUserForm = () => {
       createdUser.creationType === 'administrative' &&
       adScriptResult?.status === 'success';
     const isAdmin = createdUser.creationType === 'administrative';
-    const adMismatch =
-      isAdmin &&
-      adminAdIdentityConfirmed &&
-      adScriptResult &&
-      adminEncoladoPropuesta &&
-      adminProposalDiffersFromAdResult(adminEncoladoPropuesta, adScriptResult);
     const adUpn = adScriptResult?.userPrincipalName?.trim() || createdUser.email;
     const adDisplay =
       adScriptResult?.displayName?.trim() || createdUser.displayName;
@@ -1744,18 +1738,6 @@ const CreateUserForm = () => {
 
           {isAdmin && adminAdIdentityConfirmed && adScriptResult ? (
             <>
-              {adMismatch && (
-                <div className="admin-ad-mismatch-callout" role="status">
-                  <p className="admin-ad-mismatch-callout__title">Diferencia respecto a la propuesta al encolar</p>
-                  <p className="admin-ad-mismatch-callout__text">
-                    Lo mostrado al aceptar la cola (UPN, usuario o nombre) no coincide con lo
-                    reportado ahora por Active Directory (por ejemplo, colisión de cuentas o reglas
-                    en el script). <strong>Para validar, use solo la sección “Valores en Active
-                    Directory”</strong> o el objeto de usuario en el directorio, no el primer
-                    pantallazo.
-                  </p>
-                </div>
-              )}
               <h3 className="admin-ad-section-h3">Valores en Active Directory</h3>
               <p className="admin-ad-lead">
                 Nombre, UPN, correo (si aplica) y sAM que quedaron guardados o que devolvió el
@@ -1895,7 +1877,10 @@ const CreateUserForm = () => {
                 </>
               ) : (
                 <>
-                  La contraseña inicial la define el script de Active Directory en el servidor.{' '}
+                  <strong>
+                    Contraseña inicial ({INITIAL_PASSWORD_ADMIN_AD}):
+                  </strong>{' '}
+                  el usuario deberá cambiarla en el primer inicio de sesión.{' '}
                   {adminAdIdentityConfirmed
                     ? 'Los valores de “Valores en Active Directory” son el referente comprobado con el directorio; si aún duda, abra el objeto de usuario en AD.'
                     : 'Cuando el script confirme, verá en pantalla el nombre, UPN y usuario definitivos; pueden diferir de la fila de propuesta de arriba.'}
@@ -2223,13 +2208,13 @@ const CreateUserForm = () => {
               </p>
             </div>
             <div className="field-group">
-              <label htmlFor="op-postal">CÓDIGO POSTAL{CAMPO_OBLIGATORIO}</label>
+              <label htmlFor="op-postal">CENTRO DE COSTOS (opcional)</label>
               <input
                 id="op-postal"
                 name="postalCode"
                 inputMode="numeric"
                 pattern="[0-9]*"
-                autoComplete="postal-code"
+                autoComplete="off"
                 value={formData.postalCode}
                 onChange={handleChange}
                 maxLength={OPERATIONAL_POSTAL_MAX}
@@ -2239,8 +2224,9 @@ const CreateUserForm = () => {
                 <p className="error-text">{errors.postalCode}</p>
               )}
               <p className="note" style={{ marginTop: 8 }}>
-                Entre {OPERATIONAL_POSTAL_MIN} y {OPERATIONAL_POSTAL_MAX} dígitos. En carga masiva Excel
-                use la columna «Codigo postal» (o CP, ZIP).
+                Si lo diligencia, use entre {OPERATIONAL_POSTAL_MIN} y {OPERATIONAL_POSTAL_MAX}{' '}
+                dígitos. En carga masiva Excel use la columna «Centro de costos»; también se aceptan
+                Codigo postal, CP o ZIP.
               </p>
             </div>
           </div>
@@ -2259,6 +2245,8 @@ const CreateUserForm = () => {
               <input
                 id="admin-cedula"
                 name="cedula"
+                inputMode="numeric"
+                pattern="[0-9]*"
                 value={formData.cedula}
                 onChange={handleChange}
                 maxLength={EMPLOYEE_ID_MAX}
@@ -2289,13 +2277,13 @@ const CreateUserForm = () => {
             </div>
           </div>
           <div className="field-group admin-postal-field">
-            <label htmlFor="admin-postal">Código postal{CAMPO_OBLIGATORIO}</label>
+            <label htmlFor="admin-postal">Centro de costos (opcional)</label>
             <input
               id="admin-postal"
               name="postalCode"
               inputMode="numeric"
               pattern="[0-9]*"
-              autoComplete="postal-code"
+              autoComplete="off"
               value={formData.postalCode}
               onChange={handleChange}
               maxLength={OPERATIONAL_POSTAL_MAX}
@@ -2305,8 +2293,9 @@ const CreateUserForm = () => {
               <p className="error-text">{errors.postalCode}</p>
             )}
             <p className="note" style={{ marginTop: 8 }}>
-              Entre {OPERATIONAL_POSTAL_MIN} y {OPERATIONAL_POSTAL_MAX} dígitos. En Excel use la columna «Codigo postal»
-              (o CP, ZIP).
+              Si lo diligencia, debe tener entre {OPERATIONAL_POSTAL_MIN} y {OPERATIONAL_POSTAL_MAX}{' '}
+              dígitos. En Excel use la columna «Centro de costos»; también se aceptan Codigo postal, CP o
+              ZIP.
             </p>
           </div>
         </section>
@@ -2365,10 +2354,10 @@ const CreateUserForm = () => {
                   <p className="bulk-help-note bulk-help-note--emphasis">
                     Use la <strong>plantilla descargable</strong> para no omitir columnas: el archivo debe
                     traer <strong>todas las columnas previstas</strong>. En alta operativa solo son{' '}
-                    <strong>opcionales</strong> segundo nombre y segundo apellido; el resto es{' '}
-                    <strong>obligatorio</strong>. En <strong>nombres, apellidos, puesto y departamento</strong>{' '}
+                    <strong>opcionales</strong> segundo nombre, segundo apellido y centro de costos; el
+                    resto es <strong>obligatorio</strong>. En <strong>nombres, apellidos, puesto y departamento</strong>{' '}
                     use solo letras (incluye tildes y ñ), espacios y guiones; máximo 50 caracteres en
-                    puesto y departamento. El <strong>código postal</strong> es solo dígitos; puede
+                    puesto y departamento. El <strong>centro de costos</strong> es solo dígitos; puede
                     escribirlo como texto en Excel.
                   </p>
                   <ul className="bulk-help-list bulk-help-list--columns">
@@ -2403,9 +2392,9 @@ const CreateUserForm = () => {
                       {OPERATIONAL_SEDE_OPTIONS.join(', ')}.
                     </li>
                     <li>
-                      <strong>Código postal</strong> <span className="bulk-help-tag">(obligatorio)</span>{' '}
-                      · Solo dígitos, entre 4 y 10 (sin letras ni símbolos). Encabezados admitidos, por
-                      ejemplo: Codigo postal, CP, ZIP.
+                      <strong>Centro de costos</strong> <span className="bulk-help-tag">(opcional)</span>{' '}
+                      · Si se informa, solo dígitos entre 4 y 10 (sin letras ni símbolos). Encabezado preferido:{' '}
+                      «Centro de costos»; también Codigo postal, CP, ZIP.
                     </li>
                   </ul>
 
@@ -2497,10 +2486,10 @@ const CreateUserForm = () => {
                   <h4 className="bulk-help-heading">Columnas, obligatoriedad y tipo de dato</h4>
                   <p className="bulk-help-note bulk-help-note--emphasis">
                     Use la <strong>plantilla descargable</strong> para no omitir columnas. En alta
-                    administrativa solo son <strong>opcionales</strong> segundo nombre y segundo apellido; el
-                    resto de columnas de la plantilla es <strong>obligatorio</strong>. Salvo donde se indica
+                    administrativa son <strong>opcionales</strong> segundo nombre, segundo apellido y
+                    centro de costos; el resto de columnas de la plantilla es <strong>obligatorio</strong>. Salvo donde se indica
                     «solo dígitos», el contenido se interpreta como <strong>texto</strong> (incluido documento
-                    y código postal, para evitar cambios automáticos de Excel).
+                    y centro de costos, para evitar cambios automáticos de Excel).
                   </p>
                   <ul className="bulk-help-list bulk-help-list--columns">
                     <li>
@@ -2529,9 +2518,9 @@ const CreateUserForm = () => {
                     </li>
                     <li>
                       <strong>Documento / cédula / ID empleado</strong>{' '}
-                      <span className="bulk-help-tag">(obligatorio)</span> · Texto. Entre 5 y 32
-                      caracteres (alfanumérico y guiones). En Excel aplique formato de celda{' '}
-                      <strong>Texto</strong> para no perder ceros a la izquierda.
+                      <span className="bulk-help-tag">(obligatorio)</span> · Solo dígitos, entre 5 y 32.
+                      En Excel aplique formato de celda <strong>Texto</strong> para no perder ceros a la
+                      izquierda.
                     </li>
                     <li>
                       <strong>Ciudad / sede</strong> <span className="bulk-help-tag">(obligatorio)</span> ·
@@ -2539,9 +2528,9 @@ const CreateUserForm = () => {
                       atributo <strong>Ciudad</strong> en Active Directory; la OU se asigna automáticamente.
                     </li>
                     <li>
-                      <strong>Código postal</strong> <span className="bulk-help-tag">(obligatorio)</span>{' '}
-                      · Solo dígitos, entre 4 y 10 (sin letras ni símbolos). Puede escribirlo como texto
-                      en Excel. Encabezados admitidos: Codigo postal, CP, ZIP, etc.
+                      <strong>Centro de costos</strong> <span className="bulk-help-tag">(opcional)</span>{' '}
+                      · Si se informa, solo dígitos entre 4 y 10 (sin letras ni símbolos). Puede escribirlo como texto
+                      en Excel. Encabezado preferido: «Centro de costos»; también Codigo postal, CP, ZIP, etc.
                     </li>
                   </ul>
 

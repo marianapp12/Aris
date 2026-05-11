@@ -20,6 +20,10 @@ describe('validateAdministrativePayload', () => {
     expect(validateAdministrativePayload(validBase)).toEqual({ ok: true });
   });
 
+  it('acepta administrativos sin centro de costos', () => {
+    expect(validateAdministrativePayload({ ...validBase, postalCode: '' })).toEqual({ ok: true });
+  });
+
   it('rechaza campos obligatorios faltantes', () => {
     const r = validateAdministrativePayload({ ...validBase, givenName: '' });
     expect(r.ok).toBe(false);
@@ -35,16 +39,23 @@ describe('validateAdministrativePayload', () => {
   });
 
   it('rechaza cédula demasiado corta', () => {
-    const id = 'x'.repeat(EMPLOYEE_ID_MIN_LENGTH - 1);
+    const id = '1'.repeat(EMPLOYEE_ID_MIN_LENGTH - 1);
     const r = validateAdministrativePayload({ ...validBase, employeeId: id });
     expect(r.ok).toBe(false);
     expect(r.status).toBe(400);
   });
 
-  it('rechaza código postal no numérico', () => {
+  it('rechaza cédula con letras o guiones', () => {
+    const r = validateAdministrativePayload({ ...validBase, employeeId: '12345a' });
+    expect(r.ok).toBe(false);
+    expect(r.status).toBe(400);
+    expect(r.message).toMatch(/solo números/i);
+  });
+
+  it('rechaza centro de costos no numérico', () => {
     const r = validateAdministrativePayload({ ...validBase, postalCode: 'ABCD' });
     expect(r.ok).toBe(false);
-    expect(r.message).toMatch(/postal/i);
+    expect(r.message).toMatch(/centro de costos/i);
   });
 
   it('rechaza ciudad desconocida', () => {

@@ -258,7 +258,7 @@ export async function enqueueAdUserUpdateByEmployeeIdRequest(body, graphHint = {
     cargo: body.jobTitle.trim(),
     departamento: body.department.trim(),
     city: body.city?.trim() || undefined,
-    postalCode: normalizeAdministrativePostalCode(body.postalCode),
+    postalCode: normalizeAdministrativePostalCode(body.postalCode) || undefined,
   };
 
   setAdministrativeQueueMetadata(payload, config);
@@ -377,7 +377,7 @@ export async function enqueueAdUserRequest(body) {
     ...(config.company ? { empresa: config.company } : {}),
     employeeId,
     city: body.city?.trim() || undefined,
-    postalCode: normalizeAdministrativePostalCode(body.postalCode),
+    postalCode: normalizeAdministrativePostalCode(body.postalCode) || undefined,
   };
 
   setAdministrativeQueueMetadata(payload, config);

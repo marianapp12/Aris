@@ -27,8 +27,7 @@ export function getAdQueueConfig() {
   return {
     uncPath: unc,
     emailDomain,
-    /** Si true, no consulta Microsoft Graph antes de encolar (solo para pruebas; no recomendado en producción).
-     * No desactiva el prechequeo LDAP de cédula (AD_LDAP_*), si está configurado.
+    /** No desactiva el prechequeo LDAP de cédula (AD_LDAP_*), si está configurado.
      * Con AD_QUEUE_REQUIRE_GRAPH_FOR_ADMIN=true el encolado fallará si también está skip activo. */
     skipGraphPrecheck: skip === 'true' || skip === '1',
     requireGraphForAdmin: requireGraph === 'true' || requireGraph === '1',
@@ -109,7 +108,7 @@ export function getAdQueueProcessedTtlHours() {
 export function assertAdQueueConfigured() {
   const c = getAdQueueConfig();
   if (!c.uncPath) {
-    throw new Error('Falta la variable de entorno AD_QUEUE_UNC (ruta UNC de la cola, ej. \\\\10.10.11.9\\scripts\\pending)');
+    throw new Error('Falta la variable de entorno AD_QUEUE_UNC (ruta UNC de la cola, ej. \\\\servidor\\scripts\\pending)');
   }
   if (!c.emailDomain) {
     throw new Error('Falta la variable de entorno AD_QUEUE_EMAIL_DOMAIN (dominio del UPN/correo, sin @)');

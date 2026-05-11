@@ -163,22 +163,21 @@ async function processOperationalBulkRow(row, rowNumber, bulkReservedUpnLower) {
     !primerNombre ||
     !primerApellido ||
     !puesto ||
-    !departamento ||
-    !codigoPostalNorm
+    !departamento
   ) {
     return {
       row: rowNumber,
       status: 'error',
       message:
-        'Faltan campos obligatorios (PrimerNombre, PrimerApellido, Puesto, Departamento, Codigo postal).',
+        'Faltan campos obligatorios (PrimerNombre, PrimerApellido, Puesto, Departamento).',
     };
   }
 
-  if (!isValidOperationalPostalCodeDigits(codigoPostalNorm)) {
+  if (codigoPostalNorm && !isValidOperationalPostalCodeDigits(codigoPostalNorm)) {
     return {
       row: rowNumber,
       status: 'error',
-      message: `Codigo postal: solo números, entre ${OPERATIONAL_POSTAL_MIN} y ${OPERATIONAL_POSTAL_MAX} dígitos.`,
+      message: `Centro de costos: solo números, entre ${OPERATIONAL_POSTAL_MIN} y ${OPERATIONAL_POSTAL_MAX} dígitos.`,
     };
   }
 
@@ -267,7 +266,7 @@ async function processOperationalBulkRow(row, rowNumber, bulkReservedUpnLower) {
       surname2: segundoApellidoNorm || undefined,
       jobTitle: puestoNorm,
       department: departamentoNorm,
-      postalCode: codigoPostalNorm,
+      postalCode: codigoPostalNorm || undefined,
       bulkReservedUpnLower,
     });
 
@@ -304,17 +303,17 @@ async function processOperationalBulkRow(row, rowNumber, bulkReservedUpnLower) {
  */
 export const createOperationalUser = async (req, res, next) => {
   try {
-    /** Código postal: solo `postalCode` en el body (JSON del front). */
+    /** Centro de costos (UI): solo `postalCode` en el body (JSON del front). */
     const { givenName, surname1, surname2, jobTitle, department, sede, postalCode } = req.body;
 
     const postalNorm = normalizeOperationalPostalCode(postalCode ?? '');
 
     // Validación de campos obligatorios
-    if (!givenName || !surname1 || !jobTitle || !department || !postalNorm) {
+    if (!givenName || !surname1 || !jobTitle || !department) {
       return res.status(400).json({
         error: 'Campos obligatorios faltantes',
         message:
-          'Los campos nombre, primer apellido, puesto, departamento, sede y código postal (postalCode) son obligatorios',
+          'Los campos nombre, primer apellido, puesto, departamento y sede son obligatorios',
       });
     }
 
@@ -325,10 +324,10 @@ export const createOperationalUser = async (req, res, next) => {
       });
     }
 
-    if (!isValidOperationalPostalCodeDigits(postalNorm)) {
+    if (postalNorm && !isValidOperationalPostalCodeDigits(postalNorm)) {
       return res.status(400).json({
         error: 'Validación fallida',
-        message: `Código postal: solo números, entre ${OPERATIONAL_POSTAL_MIN} y ${OPERATIONAL_POSTAL_MAX} dígitos.`,
+        message: `Centro de costos: solo números, entre ${OPERATIONAL_POSTAL_MIN} y ${OPERATIONAL_POSTAL_MAX} dígitos.`,
       });
     }
 
@@ -403,7 +402,7 @@ export const createOperationalUser = async (req, res, next) => {
       surname2: s2Trim || undefined,
       jobTitle: jobNorm,
       department: deptNorm,
-      postalCode: postalNorm,
+      postalCode: postalNorm || undefined,
     });
 
     const groupMemberships = await applyOperationalGroupMemberships(sedeNorm, result.id);
@@ -504,7 +503,7 @@ export const getNextUsername = async (req, res) => {
  *  - Fila 1: título (opcional) — si existe, fila 2 = encabezados y datos desde fila 3
  *  - Sin fila de título: fila 1 = encabezados, datos desde fila 2
  * Encabezados: acepta "Primer Nombre", "PrimerNombre", sinónimos (Nombre→primer nombre, etc.) y Sede/Ubicación.
- * Código postal: columna obligatoria; encabezados reconocidos ej. "Codigo postal", "Código postal", "CP", "ZIP" (ver excelOperationalBulkParse).
+ * Centro de costos: columna opcional; encabezados ej. "Centro de costos", "Codigo postal", "CP", "ZIP" (ver excelOperationalBulkParse).
  * Valores de Sede: OPERATIONAL_SEDE_VALUES (operationalSede.js).
  * Concurrencia: OPERATIONAL_BULK_CONCURRENCY (1–20, por defecto 3).
  */

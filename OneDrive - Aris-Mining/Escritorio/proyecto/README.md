@@ -308,7 +308,7 @@ Carga masiva de usuarios administrativos con el mismo patrón Excel que operativ
 | `Puesto`, `Departamento` | Sí | |
 | `Cedula` o `Cédula` | Sí | Se mapea a `employeeId`; no puede repetirse dentro del mismo archivo |
 | `Ciudad` / `Sede` | Sí | Sede administrativa del listado; sinónimos en el parser (ver backend) |
-| `Codigo postal` | Sí | Solo dígitos (reglas alineadas al formulario) |
+| `Codigo postal` | No | Opcional. Si se informa, solo dígitos (4–10) |
 
 Por cada fila válida se aplica la misma lógica que **`POST /api/users/administrative`**: validación, prechequeo en **Microsoft Graph** (salvo `AD_QUEUE_SKIP_GRAPH_PRECHECK`) y escritura de **`pendiente-{requestId}.json`** en **`AD_QUEUE_UNC`**. Las filas con error aparecen en `results` sin encolar.
 

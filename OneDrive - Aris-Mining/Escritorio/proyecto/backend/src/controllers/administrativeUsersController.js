@@ -202,9 +202,9 @@ export const getNextAdministrativeUsername = async (req, res) => {
 
 /**
  * POST /api/users/administrative/bulk
- * Carga masiva: misma plantilla que operativos + Cedula (obligatoria), Codigo postal (obligatorio) y Ciudad (obligatoria: sede del listado).
+ * Carga masiva: misma plantilla que operativos + Cedula (obligatoria), Centro de costos (opcional) y Ciudad (obligatoria: sede del listado).
  * Soporta (1) fila 1 título + fila 2 encabezados + datos desde fila 3, o (2) fila 1 encabezados + datos desde fila 2.
- * Encabezados admiten variantes (espacios, mayúsculas, tildes; sinónimos como Documento → cédula, Sede → ciudad, CP/ZIP → código postal).
+ * Encabezados admiten variantes (espacios, mayúsculas, tildes; sinónimos como Documento → cédula, Sede → ciudad, CP/ZIP/Centro de costos → campo postal).
  * La fila de encabezados se detecta automáticamente (p. ej. con fila de título encima o sin ella).
  */
 export const createAdministrativeUsersBulk = async (req, res) => {
@@ -259,14 +259,13 @@ export const createAdministrativeUsersBulk = async (req, res) => {
         !puesto ||
         !departamento ||
         !cedulaRaw ||
-        !ciudad ||
-        !normalizeAdministrativePostalCode(codigoPostalRaw)
+        !ciudad
       ) {
         results.push({
           row: rowNumber,
           status: 'error',
           message:
-            'Faltan campos obligatorios (PrimerNombre, PrimerApellido, Puesto, Departamento, Cedula, Ciudad, Codigo postal).',
+            'Faltan campos obligatorios (PrimerNombre, PrimerApellido, Puesto, Departamento, Cedula, Ciudad).',
         });
         continue;
       }

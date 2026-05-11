@@ -286,7 +286,7 @@ export const uploadBulkUsers = async (file: File): Promise<BulkUploadApiResponse
   }
 };
 
-/** Carga masiva administrativa (cola AD / SMB). Plantilla: Cedula, Ciudad (nombre en AD), Codigo postal, etc. */
+/** Carga masiva administrativa (cola AD / SMB). Plantilla: Cedula, Ciudad (nombre en AD), Centro de costos, etc. */
 export const uploadAdministrativeBulkUsers = async (
   file: File
 ): Promise<BulkUploadApiResponse> => {

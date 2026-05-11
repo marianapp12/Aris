@@ -6,37 +6,13 @@
 .SYNOPSIS
   Procesa pendiente-*.json y crea o actualiza usuarios en Active Directory.
 
-.NOTAS (alineación con el backend Node)
-  Cédula (employeeId): validar en Entra ID, procesados, cola pending y AD antes de crear; eso bloquea duplicados de persona.
-  pendiente-*.json puede incluir postalCode (obligatorio en backend): se aplica en AD como PostalCode (Set-ADUser).
-  sAMAccountName/UPN: alineado con la variante administrativa/LDAP en Node (iterateLocalPartCandidates + truncado 20:
-  bases sin número (a)–(d); luego oleada numérica escalonada .1, .2, …). Los operativos M365 usan otra regla (mismo .N por vuelta);
-  este script resuelve colisiones en AD con esa secuencia LDAP.
-  aquí se resuelve con bucle Get-ADUser hasta encontrar sAM y UPN libres (autoridad final en AD). El JSON puede traer
-  samAccountName/userPrincipalName como referencia; el script recalcula la cuenta a partir de nombres/apellidos.
-  New-ADUser -Name usa el sAM resuelto (CN único en la OU); DisplayName sigue siendo el nombre completo legible, así dos
-  homónimos con distinta cédula no chocan por CN duplicado.
-
-  OU por sede (backend Node): AD_QUEUE_OU_DN + opcional AD_QUEUE_OU_LEAF_PREFIX. Sin prefijo: OU=Medellin|Marmato|Segovia.
-  Con prefijo Usuarios-Office365Sync: OU=Usuarios-Office365Sync-Medellin (etc.),<contenedor>. El JSON trae queueMetadata.ouDn
-  completo y city = nombre legible en AD (p. ej. Bogotá, Medellín, Lower Mine).
-
 .ESTRUCTURA RECOMENDADA (hermanas bajo la misma raíz, p. ej. C:\scripts o \\srv\scripts):
   pending\      ← QueuePath (este script lee solo aquí)
   procesados\   ← JSON por cédula tras alta exitosa (procesado-employeeId-*.json)
   error\        ← JSON fallidos movidos desde pending
   resultados\   ← resultado-{requestId}.json (status, samAccountName, userPrincipalName, email) para polling del backend/front
 
-  Modo continuo (-Continuous): bucle indefinido que revisa la cola cuando está vacía (por defecto cada 300 ms vía
-  -IdleSleepMilliseconds); recomendado con una sola tarea programada «Al iniciar el sistema» en lugar de repetir la tarea cada varios minutos.
-
-  Concurrencia (UNC, backend Node, -Continuous): cada archivo se renombra en la misma carpeta de pendiente-*.json a
-  procesando-*.json antes de leerlo (reclamo casi atómico), para reducir carreras donde el archivo «desaparece» entre
-  el listado y el Get-Content. No ejecute dos instancias del script sobre la misma cola.
-
 .PARAMETER Continuous
-  Si está presente, el script no termina tras una pasada: vuelve a buscar pendiente-*.json tras procesar o, si no hay
-  archivos, espera -IdleSleepMilliseconds (o -IdleSleepSeconds si ms=0) y reintenta.
 
 .PARAMETER IdleSleepMilliseconds
   Espera en milisegundos cuando la cola está vacía (solo con -Continuous). Por defecto 300 (~3 comprobaciones/s).
@@ -46,19 +22,13 @@
   Segundos de espera cuando la cola está vacía y -IdleSleepMilliseconds es 0 (solo con -Continuous). Por defecto 1.
 
 .PARAMETER ScriptsRoot
-  Raíz explícita (ej. C:\scripts). Si está vacío, se usa el padre de QueuePath vía [System.IO.Path]::GetDirectoryName (más robusto que Split-Path en muchos casos).
+  Raíz explícita (ej. C:\scripts). 
 
 .NOTAS DE MIGRACIÓN
   Versiones anteriores guardaban error y resultados bajo pending\error y pending\resultados.
   Ahora van al mismo nivel que pending. Si el backend usa AD_QUEUE_RESULTS_UNC, actualícelo a
   ...\scripts\resultados o defina la variable para la ruta antigua mientras migra.
-
-.EJEMPLO procesado-employeeId-123456.json
-  {"cedula":"1234567890","nombreCompleto":"Juan Pérez","fechaCreacion":"2026-04-01T12:00:00.000Z","estado":"creado_en_ad","requestId":"...","samAccountName":"jperez"}
 #>
-# Parámetros: QueuePath = carpeta con pendiente-*.json; ScriptsRoot = raíz de hermanas (si vacío, padre de QueuePath);
-# OrganizationalUnit = OU por defecto si el JSON no trae queueMetadata.ouDn (alinear con queueMetadata.ouDn que envía Node).
-# *Subfolder = nombres relativos bajo ScriptsRoot; DefaultCompany = compañía si no viene en el JSON.
 param(
     [string]$QueuePath          = 'C:\scripts\pending',
     [string]$ScriptsRoot        = '',
@@ -109,7 +79,7 @@ function Resolve-AdQueueScriptsRoot {
     return $parent.TrimEnd('\')
 }
 
-# Sanitiza la cédula para usarla en el nombre del archivo procesado-employeeId-*.json (evita caracteres raros en rutas).
+# la cédula para usarla en el nombre del archivo procesado-employeeId-*.json
 function Get-SafeEmployeeIdFileSuffix {
     param([string]$EmployeeId)
     if ($null -eq $EmployeeId) { return '' }
@@ -135,7 +105,7 @@ function Assert-NoProcessedRecordForEmployeeId {
 
 # Contraseña inicial fija del script (debe alinearse con políticas de AD); el usuario cambia al primer inicio si ChangePasswordAtLogon.
 function New-AdSafePassword {
-    return ConvertTo-SecureString "Aris1234*" -AsPlainText -Force
+    return ConvertTo-SecureString "Nuevo12*2026" -AsPlainText -Force
 }
 
 # Escapa comodines y comillas para usar valores en -Filter de Get-ADUser (LDAP) sin inyección ni coincidencias accidentales.
@@ -188,7 +158,7 @@ function Truncate-AdSamLocalPart {
     return $LocalPart.Substring(0, $max)
 }
 
-# Lista ordenada de candidatos (nombre.apellido, variantes con segundo nombre/apellido, luego .1, .2, … por “rondas”) como en Node.
+# multiples nombres (nombre.apellido, variantes con segundo nombre/apellido, luego .1, .2, … por “rondas”) 
 function Get-AdSamLocalPartCandidates {
     param(
         [string]$GivenNameFull,
@@ -245,16 +215,6 @@ function Get-RequestIdFromPendienteFile {
     return $null
 }
 
-<#
-  Escribe resultado-{requestId}.json en la carpeta "resultados".
-  Lo lee el backend (GET .../queue-requests/:id/result) y el front hace polling.
-  Campos clave:
-  - status: success | error (pending = archivo aún no existe)
-  - displayName: nombre para mostrar final en AD (create y updateByEmployeeId)
-  - samAccountName / userPrincipalName / email: valores finales en AD tras crear o actualizar
-    (el JSON pendiente puede traer otra propuesta; el script resuelve colisiones de sAM/UPN)
-#>
-# Escribe un JSON por requestId para que el backend/front consulten el estado del job (éxito o error).
 function Write-AdQueueResultFile {
     param(
         [string]$ResultsDir,
@@ -341,6 +301,31 @@ function Write-AdQueueProcessedUserFile {
     }
 }
 
+# Re-encola archivos huérfanos "procesando-*.json" (p.ej. si una ejecución previa terminó abruptamente).
+function Restore-StaleProcessingFiles {
+    param([string]$QueuePathPending)
+    $stale = @(Get-ChildItem -LiteralPath $QueuePathPending -Filter 'procesando-*.json' -File -ErrorAction SilentlyContinue)
+    if ($stale.Count -eq 0) { return 0 }
+    $restored = 0
+    foreach ($s in $stale) {
+        $pendingName = $s.Name -replace '^procesando-', 'pendiente-'
+        $pendingPath = Join-Path -Path $s.DirectoryName -ChildPath $pendingName
+        if (Test-Path -LiteralPath $pendingPath) {
+            Write-QueueLog "Hay pendiente existente para '$pendingName'; se elimina huérfano '$($s.Name)'." "WARN"
+            Remove-Item -LiteralPath $s.FullName -Force -ErrorAction SilentlyContinue
+            continue
+        }
+        try {
+            Rename-Item -LiteralPath $s.FullName -NewName $pendingName -ErrorAction Stop
+            $restored++
+            Write-QueueLog "Recuperado huérfano: $($s.Name) → $pendingName" "WARN"
+        } catch {
+            Write-QueueLog "No se pudo recuperar '$($s.Name)': $($_.Exception.Message)" "ERROR"
+        }
+    }
+    return $restored
+}
+
 # ── Resolver raíz y carpetas hermanas ─────────────────────────────────────────
 # error / procesados / resultados quedan al mismo nivel (hermanas de la carpeta que contiene pending), salvo que cambie ScriptsRoot.
 $scriptsRootResolved = Resolve-AdQueueScriptsRoot -ScriptsRootParam $ScriptsRoot -QueuePathPending $QueuePath
@@ -397,6 +382,11 @@ if ($Continuous) {
 
 $idleCycles = 0
 while ($true) {
+    $restoredCount = Restore-StaleProcessingFiles -QueuePathPending $QueuePath
+    if ($restoredCount -gt 0) {
+        Write-QueueLog "Se recuperaron $restoredCount archivo(s) huérfanos de procesamiento."
+    }
+
     $files = @(Get-ChildItem -LiteralPath $QueuePath -Filter 'pendiente-*.json' -File -ErrorAction SilentlyContinue)
 
     if ($files.Count -eq 0) {
@@ -646,7 +636,7 @@ foreach ($f in $files) {
 
         # Incluir nombre para mostrar, UPN y correo definitivos (pueden diferir del pendiente-*.json si hubo colisión de sAM)
         Write-AdQueueResultFile -ResultsDir $resultsDir -RequestId $requestId -Status success `
-            -Message "Usuario creado en Active Directory." -QueueAction $queueAction -SamAccountName $sam `
+            -Message "Usuario administrativo creado en Active Directory. Contraseña inicial: Nuevo12*2026. Debe cambiarla en el primer inicio de sesión." -QueueAction $queueAction -SamAccountName $sam `
             -UserPrincipalName $upn -EmailAddress $mail -DisplayName $displayName
         Remove-Item -LiteralPath $claimPath -Force
         Write-QueueLog "Usuario creado OK: $sam"
