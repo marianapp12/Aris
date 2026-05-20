@@ -36,9 +36,24 @@ docs/diagramas/
 **/*diagrama*
 **/*mockup*
 
+# Guion de presentación / video (no versionar)
+docs/presentacion/
+**/GUION*.md
+
+# Manuales técnicos y de despliegue (no versionar)
+docs/manuales/
+
 # Informes y estado locales de pruebas (no versionar; bajo docs/informes/)
+docs/informes/
 docs/informes/INFORME_PRUEBAS*.md
 docs/informes/INFORME_TECNICO_PRUEBAS.md
 docs/informes/INFORME_PRUEBAS_ULTIMA_EJECUCION.md
 docs/informes/.informe-pruebas-estado.json
 /pruebas/
+
+# Pruebas automatizadas (Vitest) y configuración
+backend/test/
+**/*.test.js
+**/*.test.ts
+**/vitest.config.js
+**/vitest.config.ts
