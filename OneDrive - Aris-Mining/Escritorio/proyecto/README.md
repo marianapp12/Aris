@@ -221,6 +221,8 @@ npm run build
    - Segundo Apellido (opcional)
    - Puesto (obligatorio)
    - Departamento (obligatorio)
+   - Sede (obligatorio)
+   - Centro de costos (opcional; solo dígitos, 4–10)
 
 2. El sistema genera automáticamente:
    - **Display Name**: `Nombre + Primer Apellido`
@@ -275,9 +277,13 @@ Crea un nuevo usuario operativo en Microsoft 365.
   "surname1": "Pérez",
   "surname2": "García",
   "jobTitle": "Desarrollador",
-  "department": "TI"
+  "department": "TI",
+  "sede": "Bogotá",
+  "postalCode": "12345678"
 }
 ```
+
+`postalCode` es el **centro de costos** (opcional). Si se omite, no se envía a Microsoft 365.
 
 **Response (201):**
 ```json
@@ -326,7 +332,7 @@ Comprueba que el proceso Node pueda **escribir y borrar** un archivo temporal en
 
 Carga masiva de usuarios administrativos con el mismo patrón Excel que operativos (**`multipart/form-data`**, campo **`file`**, `.xlsx` / `.xls`).
 
-**Plantilla:** el backend **detecta la fila de encabezados** entre las primeras filas (con o sin fila de título arriba) y acepta sinónimos (`Documento` → cédula, `Sede` → ciudad, CP/ZIP → código postal, etc.). Los nombres de columna pueden llevar espacios o tildes. Columnas:
+**Plantilla:** el backend **detecta la fila de encabezados** entre las primeras filas (con o sin fila de título arriba) y acepta sinónimos (`Documento` → cédula, `Sede` → ciudad, CP/ZIP/Codigo postal → **centro de costos**, etc.). Los nombres de columna pueden llevar espacios o tildes. Columnas:
 
 | Columna | Obligatoria | Notas |
 | --- | --- | --- |
@@ -334,7 +340,7 @@ Carga masiva de usuarios administrativos con el mismo patrón Excel que operativ
 | `Puesto`, `Departamento` | Sí | |
 | `Cedula` o `Cédula` | Sí | Se mapea a `employeeId`; no puede repetirse dentro del mismo archivo |
 | `Ciudad` / `Sede` | Sí | Sede administrativa del listado; sinónimos en el parser (ver backend) |
-| `Codigo postal` | No | Opcional. Si se informa, solo dígitos (4–10) |
+| `Centro de costos` | No | Opcional. Si se informa, solo dígitos (4–10). Encabezado preferido: «Centro de costos»; también acepta Codigo postal, CP, ZIP (se envía al backend como `postalCode`) |
 
 Por cada fila válida se aplica la misma lógica que **`POST /api/users/administrative`**: validación, prechequeo en **Microsoft Graph** (salvo `AD_QUEUE_SKIP_GRAPH_PRECHECK`) y escritura de **`pendiente-{requestId}.json`** en **`AD_QUEUE_UNC`**. Las filas con error aparecen en `results` sin encolar.
 
