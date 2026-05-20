@@ -9,19 +9,35 @@ Sistema para crear **usuarios operativos en Microsoft 365** (Microsoft Graph) y 
 - [Características principales](#características-principales)
 - [Requisitos previos](#requisitos-previos)
 - [Instalación y detalle de variables](#instalación-y-detalle-de-variables) — `backend/.env` y `frontend/.env`
-- [Plantillas Excel (SharePoint)](#plantillas-excel-estilos-y-dónde-guardarlas)
+- [Plantillas Excel (SharePoint)](#plantillas-excel-sharepoint)
 - [Ejecución (desarrollo y producción)](#ejecución)
 - [Flujos y troubleshooting](#flujo-de-creación-de-usuario)
 - [API y referencia](#api-endpoints)
 - [Seguridad y tecnologías](#seguridad)
+- [Documentación (manuales e informes)](#documentación-manuales-e-informes)
 
-Documentación complementaria en el repo:
+## Documentación manuales e informes
 
-- [`docs/server-scripts/README.md`](docs/server-scripts/README.md) — script PowerShell de la cola AD.
-- Diagramas técnicos (Mermaid/PNG) — se mantienen como artefactos locales de apoyo y **no se versionan** por política del repositorio (ver `.gitignore`).
+Documentación extendida del proyecto y evidencias de pruebas:
+
+### Manuales (`docs/manuales/`)
+
+- [`MANUAL_TECNICO_PROYECTO.md`](docs/manuales/MANUAL_TECNICO_PROYECTO.md) — detalle técnico, variables avanzadas y arquitectura.
+- [`MANUAL_DESPLIEGUE_PROYECTO.md`](docs/manuales/MANUAL_DESPLIEGUE_PROYECTO.md) — despliegue y configuración paso a paso.
+- [`DEPLOY_SMOKE.md`](docs/manuales/DEPLOY_SMOKE.md) — comprobaciones rápidas tras desplegar.
+- [`STAGING_CHECKLIST.md`](docs/manuales/STAGING_CHECKLIST.md) — checklist en entorno controlado.
+
+### Informes (`docs/informes/`)
+
+- [`INFORME_PRUEBAS.md`](docs/informes/INFORME_PRUEBAS.md) — catálogo de casos e IDs de prueba.
+- [`INFORME_TECNICO_PRUEBAS.md`](docs/informes/INFORME_TECNICO_PRUEBAS.md) — análisis técnico y trazabilidad.
+- **`INFORME_PRUEBAS_ULTIMA_EJECUCION.md`** — generado con `npm run informe:pruebas` en la raíz del monorepo (no versionado; ver `.gitignore`).
+
+### Otros recursos en `docs/`
+
+- [`docs/server-scripts/README.md`](docs/server-scripts/README.md) — script PowerShell de la cola AD (`Process-AdUserQueue.ps1`).
+- Diagramas técnicos (`docs/diagramas/`): artefactos locales de apoyo; **no se versionan** por política del repositorio (ver `.gitignore`).
 - [`frontend/public/branding/README.md`](frontend/public/branding/README.md) — logo y marca en la SPA.
-
-> Nota: los diagramas se mantienen localmente y Git los ignora por configuración del repositorio.
 
 ## Checklist: entorno y despliegue
 
@@ -36,13 +52,13 @@ Los archivos **`.env` no se versionan** (están en `.gitignore`). Toda la planti
 
 1. **Clonar** el repositorio.
 2. **Instalar dependencias:** `cd backend` → `npm install`; `cd ../frontend` → `npm install`.
-3. **Backend —** crear `backend/.env` desde el example. Incluye credenciales Azure, cola AD (`AD_QUEUE_*`), OU (`AD_QUEUE_OU_DN`), empresa (`AD_QUEUE_COMPANY`), grupos por sede (`GROUP_*`) y grupos comunes operativos (`OPERATIONAL_COMMON_GROUP_IDS`). Variables opcionales avanzadas (LDAP, rutas extra de cola, omitir prechequeo Graph, etc.) están documentadas en [`docs/MANUAL_TECNICO_PROYECTO.md`](docs/MANUAL_TECNICO_PROYECTO.md). Reiniciar Node tras cada cambio.
-4. **Frontend —** crear `frontend/.env` desde el example. Mínimo: `VITE_API_BASE_URL` (p. ej. `/api` con proxy de Vite o `http://localhost:5000/api`), `VITE_AZURE_TENANT_ID`, `VITE_AZURE_CLIENT_ID`, `VITE_AZURE_LOGI_GROUP_ID`. Opcional: `VITE_PLANTILLA_OPERARIOS_URL` y `VITE_PLANTILLA_ADMINISTRATIVOS_URL` (URLs `https` a plantillas en SharePoint). Reiniciar `npm run dev` o **volver a hacer build** en producción para que Vite inyecte las `VITE_*`.
+3. **Backend —** crear `backend/.env` desde el example. Incluye credenciales Azure, cola AD (`AD_QUEUE_*`), OU (`AD_QUEUE_OU_DN`), empresa (`AD_QUEUE_COMPANY`), grupos por sede (`GROUP_*`) y grupos comunes operativos (`OPERATIONAL_COMMON_GROUP_IDS`). Variables opcionales avanzadas (LDAP, rutas extra de cola, omitir prechequeo Graph, etc.) están documentadas en [`docs/manuales/MANUAL_TECNICO_PROYECTO.md`](docs/manuales/MANUAL_TECNICO_PROYECTO.md). Reiniciar Node tras cada cambio.
+4. **Frontend —** crear `frontend/.env` desde el example. Mínimo: `VITE_API_BASE_URL` (p. ej. `/api` con proxy de Vite o `http://localhost:5000/api`), `VITE_AZURE_TENANT_ID`, `VITE_AZURE_CLIENT_ID`, `VITE_AZURE_LOGI_GROUP_ID`, y **`VITE_PLANTILLA_OPERARIOS_URL`** / **`VITE_PLANTILLA_ADMINISTRATIVOS_URL`** (URLs `https` a las plantillas Excel en SharePoint) para la carga masiva. Reiniciar `npm run dev` o **volver a hacer build** en producción para que Vite inyecte las `VITE_*`.
 5. **Desarrollo:** dos terminales — `cd backend && npm run dev` (por defecto `http://localhost:5000`); `cd frontend && npm run dev` (puerto según Vite, a veces 5173 o 3000).
 6. **Producción — backend:** variables en el entorno del servidor (PM2, servicio de Windows, Docker, etc.) y `cd backend && npm start` o el comando acordado.
 7. **Producción — frontend:** las `VITE_*` deben existir **en el momento de** `npm run build`; luego se sirve `frontend/dist` con Nginx, IIS, Azure Static Web Apps u otro servidor estático. El bundle ya lleva la configuración; no basta con editar un `.env` en el hosting si no se reconstruye.
 
-La sección [Instalación y detalle de variables](#instalación-y-detalle-de-variables) amplía esto con ejemplos y la parte de **plantillas SharePoint** está [más abajo](#plantillas-excel-estilos-y-dónde-guardarlas).
+La sección [Instalación y detalle de variables](#instalación-y-detalle-de-variables) amplía esto con ejemplos y la parte de **plantillas SharePoint** está [más abajo](#plantillas-excel-sharepoint).
 
 ## Características principales
 
@@ -53,6 +69,16 @@ La sección [Instalación y detalle de variables](#instalación-y-detalle-de-var
 - **Nombre de usuario administrativo (LDAP/Graph)**: **`GET /api/users/administrative/next-username`** usa Graph (salvo `AD_QUEUE_SKIP_GRAPH_PRECHECK`) para devolver el primer **mailNickname/UPN** libre coherente con la lógica de operativos.
 - **Creación administrativa encolada**: **`POST /api/users`** (y el alias **`POST /api/users/administrative`**) responden **202** con `requestId`, ruta del archivo y datos propuestos; no hay polling de trabajos en el backend.
 - **Front-end**: pestañas **Operativo (Microsoft 365)** y **Administrativo (Active Directory)**; carga masiva Excel para operativos (Graph) y para administrativos (cola AD).
+
+## Estructura del proyecto
+
+- **`backend/`** — API Express (Node.js): usuarios operativos (Graph), cola administrativa (JSON en UNC), prechequeos.
+- **`frontend/`** — SPA React + Vite (MSAL, formularios y carga masiva).
+- **`docs/manuales/`** — manuales de despliegue y técnico, smoke post-despliegue y checklist de staging.
+- **`docs/informes/`** — catálogo de pruebas, informe técnico e informe dinámico de última ejecución (`npm run informe:pruebas`).
+- **`docs/server-scripts/`** — PowerShell de consumo de la cola AD (`Process-AdUserQueue.ps1`).
+
+Índice de enlaces a la documentación: [Documentación manuales e informes](#documentación-manuales-e-informes).
 
 ## Requisitos Previos
 
@@ -120,7 +146,7 @@ cd frontend
 npm install
 ```
 
-Crear `frontend/.env` según `frontend/.env.example` (API y Entra ID para el login SPA). Opcionalmente defina **`VITE_PLANTILLA_OPERARIOS_URL`** y **`VITE_PLANTILLA_ADMINISTRATIVOS_URL`** como URL **https** absolutas (p. ej. enlace de descarga en SharePoint) para que el botón «Descargar plantilla» no use solo los `.xlsx` de `frontend/public/` (útil si la plantilla corporativa lleva estilos o validaciones).
+Crear `frontend/.env` según `frontend/.env.example` (API y Entra ID para el login SPA). Defina **`VITE_PLANTILLA_OPERARIOS_URL`** y **`VITE_PLANTILLA_ADMINISTRATIVOS_URL`** como URL **https** absolutas (p. ej. enlace en SharePoint) para que el botón «Descargar plantilla» en la carga masiva funcione.
 
 **`VITE_API_BASE_URL` (importante):** las rutas del servidor son `/api/users/...`. Usa una de estas opciones:
 
@@ -129,11 +155,11 @@ Crear `frontend/.env` según `frontend/.env.example` (API y Entra ID para el log
 
 Si pones solo `http://localhost:5000` sin `/api`, el cliente intenta corregirlo automáticamente añadiendo `/api`; aun así se recomienda dejar la URL explícita en `.env` para evitar confusiones.
 
-### Plantillas Excel (estilos y dónde guardarlas)
+### Plantillas Excel (SharePoint)
 
-- El script **`backend/scripts/generatePlantillaAdministrativos.mjs`** vuelve a escribir `plantilla-administrativos.xlsx` **sin formato rico de Excel**; no lo ejecute sobre una plantilla ya maquetada en la misma ruta.
-- Si el repo está en **OneDrive**, al editar el `.xlsx` en Excel y guardar en la carpeta del proyecto pueden aparecer **conflictos de sincronización** o sensación de que «al reiniciar» se pierden estilos; conviene plantilla definitiva en **SharePoint** (y `VITE_PLANTILLA_*_URL`) o carpeta **fuera** de OneDrive y luego copiar al repo.
-- En la raíz del repo, **`.gitattributes`** marca `*.xlsx` como **binary** para que Git no toque finales de línea y no dañe el archivo.
+- La plantilla maestra debe vivir en **SharePoint** (o sitio de Teams); el frontend solo enlaza con **`VITE_PLANTILLA_OPERARIOS_URL`** y **`VITE_PLANTILLA_ADMINISTRATIVOS_URL`** (URLs absolutas `https`).
+- Si el repo está en **OneDrive**, evite versionar Excel maquetados en la carpeta del proyecto (conflictos de sincronización); use SharePoint como fuente única.
+- En la raíz del repo, **`.gitattributes`** marca `*.xlsx` como **binary** por si se versionan otros libros de Excel.
 
 #### Qué debe hacer el equipo (plantilla fija con diseño en SharePoint)
 
@@ -146,7 +172,7 @@ Si pones solo `http://localhost:5000` sin `/api`, el cliente intenta corregirlo 
 5. **Reiniciar** el servidor de desarrollo (`npm run dev` en `frontend`) o **volver a construir y publicar** el sitio para que Vite inyecte las variables.
 6. Comprobar el botón **Descargar plantilla** en la app: debe abrir el enlace (nueva pestaña). Los usuarios deben usar en Excel (web o aplicación) **Archivo → Guardar como → Descargar una copia** (o **Crear una copia** / **Descargar**, según la pantalla), trabajar en esa copia local y subirla con **Elegir archivo**; así no sobrescriben la plantilla maestra en SharePoint. La app **no modifica** el archivo en la nube.
 
-Si no se definen esas variables, la app sigue usando los archivos por defecto en **`frontend/public/plantilla-*.xlsx`**.
+Sin esas variables, el botón «Descargar plantilla» permanece deshabilitado hasta configurarlas y reconstruir o reiniciar el frontend.
 
 ## Ejecución
 

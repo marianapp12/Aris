@@ -166,6 +166,8 @@ Crear `frontend/.env` a partir de `frontend/.env.example`.
 - `VITE_AZURE_TENANT_ID`
 - `VITE_AZURE_CLIENT_ID`
 - `VITE_AZURE_LOGI_GROUP_ID`
+- `VITE_PLANTILLA_OPERARIOS_URL` (URL `https` a la plantilla Excel de operarios, p. ej. SharePoint)
+- `VITE_PLANTILLA_ADMINISTRATIVOS_URL` (URL `https` a la plantilla Excel de administrativos)
 
 Ejemplo mínimo funcional:
 
@@ -174,14 +176,11 @@ VITE_API_BASE_URL=/api
 VITE_AZURE_TENANT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 VITE_AZURE_CLIENT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 VITE_AZURE_LOGI_GROUP_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+VITE_PLANTILLA_OPERARIOS_URL=https://suempresa.sharepoint.com/.../plantilla-operarios.xlsx
+VITE_PLANTILLA_ADMINISTRATIVOS_URL=https://suempresa.sharepoint.com/.../plantilla-administrativos.xlsx
 ```
 
-### Opcionales
-
-- `VITE_PLANTILLA_OPERARIOS_URL`
-- `VITE_PLANTILLA_ADMINISTRATIVOS_URL`
-
-Nota: toda variable `VITE_*` se inyecta en build. Si cambia, es necesario reconstruir frontend.
+Nota: toda variable `VITE_*` se inyecta en el **build**. Si cambia, es necesario reconstruir el frontend.
 
 Errores comunes en frontend:
 - `VITE_API_BASE_URL` sin `/api` en desarrollo puede apuntar a rutas equivocadas.

@@ -10,6 +10,17 @@ const OPERATIONAL_UPN_DOMAIN =
 
 const INITIAL_PASSWORD = 'Aris1234*';
 
+/** Límites típicos Microsoft Graph (recurso user). */
+const GRAPH_SURNAME_MAX = 64;
+const GRAPH_CITY_MAX = 128;
+
+function truncateForGraphField(value, maxLen) {
+  const s = String(value ?? '').trim();
+  if (!s) return '';
+  if (s.length <= maxLen) return s;
+  return s.slice(0, maxLen).trimEnd();
+}
+
 /** Evita condición de carrera en carga masiva: solo una creación (pick UPN + POST) a la vez. */
 let graphUserCreateChain = Promise.resolve();
 
@@ -82,6 +93,7 @@ async function createUserInMicrosoft365Serialized({
   jobTitle,
   department,
   postalCode,
+  city,
   bulkReservedUpnLower,
 }) {
   const graphClient = getGraphClient();
@@ -90,7 +102,9 @@ async function createUserInMicrosoft365Serialized({
     .map((v) => v && v.trim())
     .filter(Boolean)
     .join(' ');
+  const surnameForGraph = truncateForGraphField(fullSurname, GRAPH_SURNAME_MAX);
   const displayName = `${givenName.trim()} ${fullSurname}`.trim();
+  const cityForGraph = city ? truncateForGraphField(city, GRAPH_CITY_MAX) : '';
 
   let lastError;
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -108,7 +122,7 @@ async function createUserInMicrosoft365Serialized({
       mailNickname: localPart,
       userPrincipalName: userPrincipalName,
       givenName: givenName.trim(),
-      surname: surname1.trim(),
+      surname: surnameForGraph,
       passwordProfile: {
         password: INITIAL_PASSWORD,
         forceChangePasswordNextSignIn: true,
@@ -116,10 +130,24 @@ async function createUserInMicrosoft365Serialized({
       jobTitle: jobTitle,
       department: department,
       ...(postalCode ? { postalCode } : {}),
+      ...(cityForGraph ? { city: cityForGraph } : {}),
     };
 
     try {
       const createdUser = await graphClient.api('/users').post(newUser);
+      const finalUpn = String(createdUser.userPrincipalName || userPrincipalName || '').trim();
+      if (finalUpn && createdUser.id) {
+        try {
+          await graphClient.api(`/users/${createdUser.id}`).patch({
+            otherMails: [finalUpn],
+          });
+        } catch (patchErr) {
+          console.warn(
+            '[Graph] No se pudo actualizar otherMails tras crear usuario operativo (el UPN sigue siendo el inicio de sesión):',
+            patchErr?.message || patchErr
+          );
+        }
+      }
       return {
         id: createdUser.id,
         userPrincipalName: createdUser.userPrincipalName,

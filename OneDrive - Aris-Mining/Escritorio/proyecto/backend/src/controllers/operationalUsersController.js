@@ -267,6 +267,7 @@ async function processOperationalBulkRow(row, rowNumber, bulkReservedUpnLower) {
       jobTitle: puestoNorm,
       department: departamentoNorm,
       postalCode: codigoPostalNorm || undefined,
+      city: sedeNorm,
       bulkReservedUpnLower,
     });
 
@@ -403,6 +404,7 @@ export const createOperationalUser = async (req, res, next) => {
       jobTitle: jobNorm,
       department: deptNorm,
       postalCode: postalNorm || undefined,
+      city: sedeNorm,
     });
 
     const groupMemberships = await applyOperationalGroupMemberships(sedeNorm, result.id);

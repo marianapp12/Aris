@@ -1,7 +1,7 @@
 {
   "name": "aris-user-provisioning",
   "private": true,
-  "description": "Monorepo: dev:backend + dev:frontend. Pruebas: test:all, test:verbose, test:coverage:all. Informe dinámico: informe:pruebas (métricas §4 en INFORME_PRUEBAS_ULTIMA_EJECUCION). Informe técnico: docs/INFORME_TECNICO_PRUEBAS.md",
+  "description": "Monorepo: dev:backend + dev:frontend. Pruebas: test:all, test:verbose, test:coverage:all. Informe dinámico: informe:pruebas (métricas §4 en docs/informes/INFORME_PRUEBAS_ULTIMA_EJECUCION.md). Informe técnico: docs/informes/INFORME_TECNICO_PRUEBAS.md",
   "scripts": {
     "dev:backend": "npm run dev --prefix backend",
     "dev:frontend": "npm run dev --prefix frontend",

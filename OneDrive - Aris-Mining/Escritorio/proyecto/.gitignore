@@ -36,15 +36,9 @@ docs/diagramas/
 **/*diagrama*
 **/*mockup*
 
-# Informes y estado locales de pruebas (no versionar)
-docs/INFORME_PRUEBAS*.md
-docs/INFORME_TECNICO_PRUEBAS.md
-docs/INFORME_PRUEBAS_ULTIMA_EJECUCION.md
-docs/.informe-pruebas-estado.json
+# Informes y estado locales de pruebas (no versionar; bajo docs/informes/)
+docs/informes/INFORME_PRUEBAS*.md
+docs/informes/INFORME_TECNICO_PRUEBAS.md
+docs/informes/INFORME_PRUEBAS_ULTIMA_EJECUCION.md
+docs/informes/.informe-pruebas-estado.json
 /pruebas/
-
-# Manuales e informes generados por nombre de carpeta o archivo
-**/manuales/
-**/*manuales*
-**/informe/
-**/*informe*

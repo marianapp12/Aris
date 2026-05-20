@@ -28,13 +28,11 @@ import './CreateUserForm.css';
  * Incluye validación en cliente, filtrado de entrada, carga masiva Excel y polling del resultado AD.
  */
 
-function plantillaHrefFromEnv(
-  envUrl: string | undefined,
-  publicRelativeFile: string
-): string {
+/** URL absoluta a la plantilla (SharePoint, etc.). Sin fallback en `public/`. */
+function plantillaUrlFromEnv(envUrl: string | undefined): string | null {
   const u = envUrl?.trim();
   if (u && /^https?:\/\//i.test(u)) return u;
-  return `${import.meta.env.BASE_URL}${publicRelativeFile}`;
+  return null;
 }
 
 function plantillaDownloadLinkProps(
@@ -47,26 +45,21 @@ function plantillaDownloadLinkProps(
   return { download: downloadFileName };
 }
 
-const PLANTILLA_OPERARIOS_HREF = plantillaHrefFromEnv(
-  import.meta.env.VITE_PLANTILLA_OPERARIOS_URL,
-  'plantilla-operarios.xlsx'
-);
-const PLANTILLA_ADMINISTRATIVOS_HREF = plantillaHrefFromEnv(
-  import.meta.env.VITE_PLANTILLA_ADMINISTRATIVOS_URL,
-  'plantilla-administrativos.xlsx'
+const PLANTILLA_OPERARIOS_HREF = plantillaUrlFromEnv(import.meta.env.VITE_PLANTILLA_OPERARIOS_URL);
+const PLANTILLA_ADMINISTRATIVOS_HREF = plantillaUrlFromEnv(
+  import.meta.env.VITE_PLANTILLA_ADMINISTRATIVOS_URL
 );
 
 function plantillaOrigenNote(
-  href: string,
+  href: string | null,
   kind: 'operational' | 'administrative'
 ): ReactNode {
-  const remoto = /^https?:\/\//i.test(href);
   const envVarName =
     kind === 'operational'
       ? 'VITE_PLANTILLA_OPERARIOS_URL'
       : 'VITE_PLANTILLA_ADMINISTRATIVOS_URL';
 
-  if (remoto) {
+  if (href) {
     return (
       <div
         className="plantilla-remoto-callout"
@@ -102,10 +95,10 @@ function plantillaOrigenNote(
 
   return (
     <p className="note" style={{ marginTop: 8, marginBottom: 0 }}>
-      Ahora se usa la plantilla incluida en la web. Para que todos descarguen <strong>siempre</strong> la
-      misma plantilla con diseño desde <strong>SharePoint</strong>, defina <code>{envVarName}</code> en{' '}
-      <code>frontend/.env</code> (URL que empiece por <code>https://</code>) y reinicie el frontend; véase{' '}
-      <code>frontend/.env.example</code> y el README del proyecto.
+      Defina <code>{envVarName}</code> en <code>frontend/.env</code> con una URL absoluta que empiece por{' '}
+      <code>https://</code> (p. ej. enlace a la plantilla en <strong>SharePoint</strong>), reinicie el frontend o
+      vuelva a hacer <strong>build</strong>, y comprobar de nuevo. Véase <code>frontend/.env.example</code> y el README
+      del proyecto.
     </p>
   );
 }
@@ -2331,13 +2324,24 @@ const CreateUserForm = () => {
                     {bulkFile ? bulkFile.name : 'Ningún archivo seleccionado'}
                   </span>
                 </div>
-                <a
-                  className="secondary-btn bulk-upload-template-btn"
-                  href={PLANTILLA_OPERARIOS_HREF}
-                  {...plantillaDownloadLinkProps(PLANTILLA_OPERARIOS_HREF, 'plantilla operarios.xlsx')}
-                >
-                  Descargar plantilla
-                </a>
+                {PLANTILLA_OPERARIOS_HREF ? (
+                  <a
+                    className="secondary-btn bulk-upload-template-btn"
+                    href={PLANTILLA_OPERARIOS_HREF}
+                    {...plantillaDownloadLinkProps(PLANTILLA_OPERARIOS_HREF, 'plantilla operarios.xlsx')}
+                  >
+                    Descargar plantilla
+                  </a>
+                ) : (
+                  <button
+                    type="button"
+                    disabled
+                    className="secondary-btn bulk-upload-template-btn"
+                    title="Configure VITE_PLANTILLA_OPERARIOS_URL en frontend/.env con una URL https a la plantilla en SharePoint."
+                  >
+                    Descargar plantilla
+                  </button>
+                )}
                 {plantillaOrigenNote(PLANTILLA_OPERARIOS_HREF, 'operational')}
               </div>
               <details className="bulk-upload-help">
@@ -2462,16 +2466,27 @@ const CreateUserForm = () => {
                     {bulkAdminFile ? bulkAdminFile.name : 'Ningún archivo seleccionado'}
                   </span>
                 </div>
-                <a
-                  className="secondary-btn bulk-upload-template-btn"
-                  href={PLANTILLA_ADMINISTRATIVOS_HREF}
-                  {...plantillaDownloadLinkProps(
-                    PLANTILLA_ADMINISTRATIVOS_HREF,
-                    'plantilla administrativos.xlsx'
-                  )}
-                >
-                  Descargar plantilla
-                </a>
+                {PLANTILLA_ADMINISTRATIVOS_HREF ? (
+                  <a
+                    className="secondary-btn bulk-upload-template-btn"
+                    href={PLANTILLA_ADMINISTRATIVOS_HREF}
+                    {...plantillaDownloadLinkProps(
+                      PLANTILLA_ADMINISTRATIVOS_HREF,
+                      'plantilla administrativos.xlsx'
+                    )}
+                  >
+                    Descargar plantilla
+                  </a>
+                ) : (
+                  <button
+                    type="button"
+                    disabled
+                    className="secondary-btn bulk-upload-template-btn"
+                    title="Configure VITE_PLANTILLA_ADMINISTRATIVOS_URL en frontend/.env con una URL https a la plantilla en SharePoint."
+                  >
+                    Descargar plantilla
+                  </button>
+                )}
                 {plantillaOrigenNote(PLANTILLA_ADMINISTRATIVOS_HREF, 'administrative')}
               </div>
               <details className="bulk-upload-help">

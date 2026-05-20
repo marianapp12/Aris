@@ -1,5 +1,5 @@
 /**
- * Ejecuta Vitest en backend y frontend, genera docs/INFORME_PRUEBAS_ULTIMA_EJECUCION.md
+ * Ejecuta Vitest en backend y frontend, genera docs/informes/INFORME_PRUEBAS_ULTIMA_EJECUCION.md
  * con resultados medidos y metadatos Git (commit, árbol sucio, cambio desde informe anterior).
  *
  * Uso (desde la raíz del monorepo): npm run informe:pruebas
@@ -12,10 +12,11 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 const docs = path.join(root, 'docs');
-const statePath = path.join(docs, '.informe-pruebas-estado.json');
-const outBackendJson = path.join(docs, '.vitest-last-backend.json');
-const outFrontendJson = path.join(docs, '.vitest-last-frontend.json');
-const outMd = path.join(docs, 'INFORME_PRUEBAS_ULTIMA_EJECUCION.md');
+const informesDir = path.join(docs, 'informes');
+const statePath = path.join(informesDir, '.informe-pruebas-estado.json');
+const outBackendJson = path.join(informesDir, '.vitest-last-backend.json');
+const outFrontendJson = path.join(informesDir, '.vitest-last-frontend.json');
+const outMd = path.join(informesDir, 'INFORME_PRUEBAS_ULTIMA_EJECUCION.md');
 
 function git(args) {
   const r = spawnSync('git', args, {
@@ -158,6 +159,7 @@ function markdownDurationSummary(label, agg) {
 
 function main() {
   fs.mkdirSync(docs, { recursive: true });
+  fs.mkdirSync(informesDir, { recursive: true });
 
   const prevState = fs.existsSync(statePath)
     ? JSON.parse(fs.readFileSync(statePath, 'utf8'))

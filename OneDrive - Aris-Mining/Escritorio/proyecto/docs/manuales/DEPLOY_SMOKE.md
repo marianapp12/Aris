@@ -4,7 +4,7 @@ Comprobaciones rápidas tras publicar backend y frontend. Orden sugerido.
 
 ## Infraestructura
 
-- [ ] **Node:** versión alineada con [.nvmrc](../.nvmrc) en el servidor y en CI.
+- [ ] **Node:** versión alineada con [.nvmrc](../../.nvmrc) en el servidor y en CI.
 - [ ] **Healthcheck** del balanceador o contenedor apuntando a `GET /health` del API.
 - [ ] **CORS:** en producción definir `CORS_ORIGIN` con el origen público del front (p. ej. `https://app.ejemplo.com`). Si no se define, el servidor mantiene CORS permisivo (`cors()`), útil solo en desarrollo.
 - [ ] **Frontend:** `VITE_API_BASE_URL` en el build apunta al API público (u origen + path detrás del mismo host); no depender del proxy de Vite de desarrollo.

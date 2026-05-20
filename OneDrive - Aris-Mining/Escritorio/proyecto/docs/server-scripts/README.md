@@ -11,7 +11,7 @@ Documentación del consumidor de la cola JSON (`pendiente-*.json`) en Active Dir
 - [Ejemplo de Tarea programada (modo continuo, recomendado)](#ejemplo-de-tarea-programada-modo-continuo-recomendado)
 - [Tarea periódica (sin modo continuo)](#tarea-periódica-sin-modo-continuo)
 - [OU, correo y cédula](#ou-correo-y-cédula)
-- [Plantilla Excel administrativos](#plantilla-excel-administrativos)
+- [Plantilla Excel (SharePoint)](#plantilla-excel-sharepoint)
 - [Errores](#errores)
 - [El editor marca muchos errores en el `.ps1`](#el-editor-marca-muchos-errores-en-el-ps1)
 - [Contraseña](#contraseña)
@@ -91,13 +91,9 @@ Argumentos **sin** `-Continuous`:
 
 **Nota (backend Node):** la limpieza de archivos en `procesados` frente a Microsoft Graph (`AD_PROCESSED_GRAPH_SYNC_INTERVAL_MS` en el backend, por defecto ~60 s) es un proceso **aparte** del script AD; no sustituye esta tarea programada.
 
-### Plantilla Excel administrativos
+### Plantilla Excel (SharePoint)
 
-Para regenerar `frontend/public/plantilla-administrativos.xlsx` con el ejemplo de fila, desde la carpeta `backend` ejecute:
-
-`node scripts/generatePlantillaAdministrativos.mjs`
-
-**No ejecute** ese comando sobre una plantilla que ya haya editado en Excel con formato (colores, tablas, etc.): **machaca el archivo** y solo deja datos mínimos (SheetJS no conserva estilos). Para una plantilla corporativa estilizada, guárdela con otro nombre o en otra ruta, o configure en el frontend `VITE_PLANTILLA_ADMINISTRATIVOS_URL` con un enlace HTTPS (p. ej. SharePoint) y no dependa del archivo en `public/`.
+Las plantillas de carga masiva (operativos y administrativos) se publican en **SharePoint** (u otra URL `https`). En el frontend defina `VITE_PLANTILLA_OPERARIOS_URL` y `VITE_PLANTILLA_ADMINISTRATIVOS_URL` antes del build; véase el README principal y `frontend/.env.example`. Este repositorio no incluye scripts que regeneren `.xlsx` en `public/`.
 
 ### Errores
 
