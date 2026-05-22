@@ -5,6 +5,7 @@ Documentación del consumidor de la cola JSON (`pendiente-*.json`) en Active Dir
 ## Contenido
 
 - [Process-AdUserQueue.ps1](#process-aduserqueueps1)
+- [Clear-AdQueueTestArtifacts.ps1 (limpiar JSON de prueba)](#clear-adqueuetestartifactsps1-limpiar-json-de-prueba)
 - [Si la interfaz «tarda ~5 minutos» o más](#si-la-interfaz-tarda-5-minutos-o-más)
 - [Requisitos](#requisitos)
 - [Parámetros del script (resumen)](#parámetros-del-script-resumen)
@@ -21,6 +22,50 @@ Documentación del consumidor de la cola JSON (`pendiente-*.json`) en Active Dir
 El backend Node escribe archivos `pendiente-{uuid}.json` en la ruta UNC definida por `AD_QUEUE_UNC`. Este script debe ejecutarse **en el servidor** (o en un equipo con módulo **ActiveDirectory** y permisos para crear usuarios en la OU). Al tomar cada archivo, el script lo renombra momentáneamente a `procesando-{uuid}.json` en la misma carpeta (menos carreras con UNC y `-Continuous`); no ejecute dos instancias del script sobre la misma cola.
 
 **Recomendado (baja latencia):** modo continuo `-Continuous`: una sola tarea programada **al iniciar el sistema** deja el script en bucle revisando la cola cuando está vacía (por defecto cada **300 ms**). Así las solicitudes se procesan en segundos.
+
+### Prechequeo administrativo sin archivos M365 en carpetas (por defecto)
+
+Node **no** escribe `resultado-operativo-m365-*` ni `.reservado-m365-*` salvo `OPERATIONAL_M365_SMB_MIRROR=true` en el `.env` del backend. El orden es:
+
+1. Microsoft Graph (UPN, correo, alias)
+2. Cola AD (`pendiente-*`, `procesando-*`, `resultado-*` de admin)
+3. LDAP (opcional)
+
+`Process-AdUserQueue.ps1` usa solo `m365ReservedSamAccountNames` del `pendiente-*.json` (memoria de Node), no escanea espejos en `resultados/`.
+
+### Error «[System.String] no contiene ningún método llamado 'Add'»
+
+Suele indicar un `Process-AdUserQueue.ps1` incompleto o antiguo. Copie el `.ps1` **completo** desde `docs/server-scripts/` a `C:\scripts\`. La versión actual usa un **hashtable** (`Test-M365ReservedSamSetContains`, `Add-ToM365ReservedSamSet`) para reservas M365, compatible con PowerShell 5.1.
+
+### Error «No se puede llamar a un método en una expresión con valor NULL»
+
+Compruebe que el script incluye `New-M365ReservedSamSetFromQueueItem` y que copió el archivo entero (no un fragmento). Reinicie la tarea programada tras reemplazar `C:\scripts\Process-AdUserQueue.ps1`.
+
+### `Clear-AdQueueTestArtifacts.ps1` (limpiar JSON de prueba)
+
+Borra los archivos de la cola en las carpetas hermanas de `pending` (misma raíz que `AD_QUEUE_UNC` en el backend). **No** elimina usuarios en M365 ni en AD.
+
+| Carpeta | Archivos que elimina |
+|---------|----------------------|
+| `pending` | `pendiente-*.json`, `procesando-*.json`, `.reservado-m365-*.json`, `ok` |
+| `resultados` | `resultado-*.json`, `resultado-operativo-m365-*.json` |
+| `procesados` | `procesado-employeeId-*.json` |
+| `error` | JSON de solicitudes fallidas |
+
+Con tu `.env` típico (`AD_QUEUE_UNC=\\10.10.11.4\scripts\pending`):
+
+```powershell
+# Simulación (solo lista)
+.\Clear-AdQueueTestArtifacts.ps1 -WhatIf
+
+# Borrar de verdad (detenga Process-AdUserQueue un momento si usa -Continuous)
+.\Clear-AdQueueTestArtifacts.ps1 -Force
+
+# Otra raíz
+.\Clear-AdQueueTestArtifacts.ps1 -ScriptsRoot '\\10.10.11.4\scripts' -Force
+```
+
+Tras limpiar: **reinicie el backend** (`npm run dev`) para vaciar reservas M365 en memoria de Node.
 
 ### Si la interfaz “tarda ~5 minutos” o más
 

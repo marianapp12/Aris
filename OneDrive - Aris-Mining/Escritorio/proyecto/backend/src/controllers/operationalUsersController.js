@@ -419,7 +419,7 @@ export const createOperationalUser = async (req, res, next) => {
       id: result.id,
       userPrincipalName: result.userPrincipalName,
       displayName: result.displayName,
-      email: result.userPrincipalName, // El userPrincipalName ya incluye el dominio
+      email: result.mail || result.userPrincipalName,
       message: 'Usuario creado exitosamente en Microsoft 365',
       sede: sedeNorm,
       groupMemberships,
@@ -448,6 +448,22 @@ export const createOperationalUser = async (req, res, next) => {
       return res.status(400).json({
         error: 'Datos inválidos',
         message: error.message || 'Los datos proporcionados no son válidos para Microsoft 365',
+      });
+    }
+
+    if (error.statusCode === 503) {
+      return res.status(503).json({
+        error: 'Prechequeo AD no disponible',
+        message:
+          error.message ||
+          'No se pudo consultar Active Directory o la cola antes del alta operativa.',
+      });
+    }
+
+    if (error.code === 'NO_UPN_CANDIDATES_EXHAUSTED') {
+      return res.status(422).json({
+        error: 'Sin nombre de cuenta disponible',
+        message: error.message || 'No quedó ningún UPN libre en Microsoft 365, cola AD ni Active Directory.',
       });
     }
 
@@ -489,6 +505,18 @@ export const getNextUsername = async (req, res) => {
       return res.status(500).json({
         error: 'Error de autenticación',
         message: 'Error al conectar con Microsoft 365.',
+      });
+    }
+    if (error.statusCode === 503) {
+      return res.status(503).json({
+        error: 'Prechequeo AD no disponible',
+        message: error.message || 'No se pudo consultar Active Directory antes de proponer el UPN.',
+      });
+    }
+    if (error.code === 'NO_UPN_CANDIDATES_EXHAUSTED') {
+      return res.status(422).json({
+        error: 'Sin nombre de cuenta disponible',
+        message: error.message,
       });
     }
     res.status(500).json({

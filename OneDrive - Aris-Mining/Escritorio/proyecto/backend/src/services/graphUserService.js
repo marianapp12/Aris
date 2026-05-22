@@ -3,9 +3,11 @@ import {
   pickFirstAvailableSamAndUpnForOperational,
   NO_UPN_CANDIDATES_EXHAUSTED,
 } from './graphUpnCandidatePicker.js';
+import { registerOperationalM365AfterCreate } from './operationalQueueMirror.js';
 
 const OPERATIONAL_UPN_DOMAIN =
   process.env.OPERATIONAL_UPN_DOMAIN?.trim() ||
+  process.env.AD_QUEUE_EMAIL_DOMAIN?.trim() ||
   'realizandoprueba123hotmail.onmicrosoft.com';
 
 const INITIAL_PASSWORD = 'Aris1234*';
@@ -121,6 +123,7 @@ async function createUserInMicrosoft365Serialized({
       displayName: displayName,
       mailNickname: localPart,
       userPrincipalName: userPrincipalName,
+      mail: userPrincipalName,
       givenName: givenName.trim(),
       surname: surnameForGraph,
       passwordProfile: {
@@ -136,21 +139,28 @@ async function createUserInMicrosoft365Serialized({
     try {
       const createdUser = await graphClient.api('/users').post(newUser);
       const finalUpn = String(createdUser.userPrincipalName || userPrincipalName || '').trim();
-      if (finalUpn && createdUser.id) {
+      const finalMail = String(createdUser.mail || finalUpn || userPrincipalName || '').trim();
+      if (createdUser.id && finalUpn && finalMail.toLowerCase() !== finalUpn.toLowerCase()) {
         try {
-          await graphClient.api(`/users/${createdUser.id}`).patch({
-            otherMails: [finalUpn],
-          });
+          await graphClient.api(`/users/${createdUser.id}`).patch({ mail: finalUpn });
         } catch (patchErr) {
           console.warn(
-            '[Graph] No se pudo actualizar otherMails tras crear usuario operativo (el UPN sigue siendo el inicio de sesión):',
+            '[Graph] No se pudo alinear mail con UPN tras crear usuario operativo:',
             patchErr?.message || patchErr
           );
         }
       }
+      const primaryEmail = finalUpn || finalMail || userPrincipalName;
+      await registerOperationalM365AfterCreate({
+        samAccountName: localPart,
+        userPrincipalName: primaryEmail,
+        email: primaryEmail,
+      });
+
       return {
         id: createdUser.id,
-        userPrincipalName: createdUser.userPrincipalName,
+        userPrincipalName: createdUser.userPrincipalName || finalUpn,
+        mail: createdUser.mail || primaryEmail,
         displayName: createdUser.displayName,
       };
     } catch (error) {

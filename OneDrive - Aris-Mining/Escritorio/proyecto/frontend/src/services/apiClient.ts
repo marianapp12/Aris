@@ -10,6 +10,7 @@ import {
   AdQueueCreationAccepted,
   AdQueueConnectionTestResult,
   AdQueueRequestResult,
+  CheckExistingPersonResponse,
 } from '../types/user';
 
 /**
@@ -49,6 +50,28 @@ const apiClient = axios.create({
     'Content-Type': 'application/json',
   },
 });
+
+/**
+ * Comprueba si ya existe una cuenta con el mismo nombre y apellidos en M365 o AD.
+ * POST /api/users/check-existing-person
+ */
+export const checkExistingPersonByName = async (payload: {
+  givenName: string;
+  surname1: string;
+  surname2?: string;
+}): Promise<CheckExistingPersonResponse> => {
+  try {
+    const response = await apiClient.post<CheckExistingPersonResponse>(
+      '/users/check-existing-person',
+      payload
+    );
+    return response.data;
+  } catch (error) {
+    throw new Error(
+      getAxiosErrorMessage(error, 'No se pudo verificar si la persona ya existe')
+    );
+  }
+};
 
 /** Alta individual en Microsoft 365 (POST /api/users/operational). */
 export const createOperationalUser = async (

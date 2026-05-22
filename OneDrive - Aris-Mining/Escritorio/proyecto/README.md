@@ -264,6 +264,12 @@ Tras modificar `.env`, **reinicie el backend**.
 
 Los errores de creación o consulta en Microsoft 365 se registran con prefijo `[GRAPH]` en la consola (una línea con código HTTP y mensaje). Revise `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, permisos **User.ReadWrite.All** con consentimiento de administrador y que el secreto no haya expirado.
 
+| Síntoma | Qué revisar |
+| --- | --- |
+| Tras un alta **administrativa**, el operativo reutiliza el mismo correo/UPN | El alta operativa revisa **primero** las carpetas SMB (`pending`: `pendiente-*.json`, `procesando-*.json`; `resultados`: `resultado-*.json`; `procesados`: `procesado-employeeId-*.json`), luego **Graph**, luego **LDAP** (opcional). Con `AD_QUEUE_UNC` y permiso de lectura en esas carpetas **no hace falta** `AD_LDAP_BIND_PASSWORD`. LDAP cubre usuarios en AD sin JSON en disco. Alinee `OPERATIONAL_UPN_DOMAIN` con `AD_QUEUE_EMAIL_DOMAIN`. |
+| **503** «Prechequeo AD no disponible» | LDAP configurado pero el DC no es alcanzable o credenciales incorrectas; o use `OPERATIONAL_SKIP_AD_PRECHECK=true` solo en pruebas. |
+| **422** sin UPN disponible | Todas las variantes de nombre están ocupadas en Graph, cola o AD; revise manualmente o libere alias. |
+
 ## API Endpoints
 
 ### POST /api/users/operational

@@ -4,8 +4,10 @@
 import dotenv from 'dotenv';
 import { createApp } from './createApp.js';
 import { startAdQueueProcessedGraphCleanup } from './services/adQueueProcessedGraphCleanup.js';
+import { logUpnPrecheckConfigWarnings } from './config/adQueueConfig.js';
 
 dotenv.config();
+logUpnPrecheckConfigWarnings();
 
 const app = createApp();
 const PORT = process.env.PORT || 5000;

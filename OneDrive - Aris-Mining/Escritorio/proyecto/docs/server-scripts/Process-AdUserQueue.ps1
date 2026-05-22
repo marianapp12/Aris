@@ -177,7 +177,8 @@ function Get-AdSamLocalPartCandidates {
         $secondaryGiven = $null
     }
 
-    $bases = [System.Collections.Generic.List[string]]::new()
+    $bases = New-Object 'System.Collections.Generic.List[string]'
+    if ($null -eq $bases) { return @() }
     $a = Get-AdJoinedLocalPart $primaryGiven $s1
     if ($a -and -not $bases.Contains($a)) { [void]$bases.Add($a) }
     if ($s2) {
@@ -194,7 +195,8 @@ function Get-AdSamLocalPartCandidates {
     }
 
     $k = $bases.Count
-    $list = [System.Collections.Generic.List[string]]::new()
+    $list = New-Object 'System.Collections.Generic.List[string]'
+    if ($null -eq $list) { return @() }
     if ($k -lt 1) { return $list }
     foreach ($b in $bases) { $list.Add($b) }
     $S = 1
@@ -257,6 +259,71 @@ function Write-AdQueueResultFile {
     } catch {
         Write-QueueLog "No se pudo escribir resultado '$outPath': $($_.Exception.Message)" "ERROR"
     }
+}
+
+# sAM reservados por operativos M365: hashtable (evita HashSet/.Add null en PowerShell 5.1 antiguo).
+function New-OperationalM365ReservedSamSet {
+    return @{}
+}
+
+function Add-ToM365ReservedSamSet {
+    param(
+        [hashtable]$Set,
+        [string]$Sam
+    )
+    if ($null -eq $Set) { return }
+    if ([string]::IsNullOrWhiteSpace($Sam)) { return }
+    $key = $Sam.Trim().ToLowerInvariant()
+    if ($key) { $Set[$key] = $true }
+}
+
+function Test-M365ReservedSamSetContains {
+    param(
+        [hashtable]$Set,
+        [string]$Sam
+    )
+    if ($null -eq $Set) { return $false }
+    if ([string]::IsNullOrWhiteSpace($Sam)) { return $false }
+    return $Set.ContainsKey($Sam.Trim().ToLowerInvariant())
+}
+
+function Format-M365ReservedSamSetForLog {
+    param([hashtable]$Set)
+    if ($null -eq $Set -or $Set.Count -lt 1) { return '' }
+    return (($Set.Keys | Sort-Object) -join ', ')
+}
+
+# ConvertFrom-Json suele devolver un solo elemento del array como [string], no como array.
+function Add-M365ReservedSamNamesFromJson {
+    param(
+        [hashtable]$Set,
+        $Names
+    )
+    if ($null -eq $Set) { return }
+    if ($null -eq $Names) { return }
+
+    $items = @()
+    if ($Names -is [string]) {
+        $items = @($Names)
+    } else {
+        $items = @($Names)
+    }
+
+    foreach ($r in $items) {
+        if ($null -eq $r) { continue }
+        Add-ToM365ReservedSamSet -Set $Set -Sam ($r.ToString())
+    }
+}
+
+# sAM reservados por operativos M365: solo lista del JSON (Node prechequeó en Microsoft Graph; sin escanear carpetas).
+function New-M365ReservedSamSetFromQueueItem {
+    param($Item)
+    $set = New-OperationalM365ReservedSamSet
+    if ($null -eq $set) { $set = @{} }
+    if ($Item -and $Item.m365ReservedSamAccountNames) {
+        Add-M365ReservedSamNamesFromJson -Set $set -Names $Item.m365ReservedSamAccountNames
+    }
+    return $set
 }
 
 <#
@@ -527,19 +594,83 @@ foreach ($f in $files) {
 
         $upnRaw = $item.userPrincipalName.ToString().Trim()
         if ($upnRaw -notmatch '@') { throw "UPN inválido: '$upnRaw'" }
-        # El dominio del UPN final se toma del JSON; la parte local se recalcula en AD hasta encontrar par sAM+UPN libres.
-        $upnDomain = ($upnRaw -split '@', 2)[1].ToLowerInvariant()
+        # Dominio del UPN: del JSON. Node ya prechequeó Graph/carpetas; aquí se respeta sam/upn del JSON si AD los tiene libres.
+        $upnParts = $upnRaw -split '@', 2
+        if ($upnParts.Count -lt 2 -or [string]::IsNullOrWhiteSpace($upnParts[1])) {
+            throw "UPN inválido (falta dominio después de @): '$upnRaw'"
+        }
+        $upnDomain = $upnParts[1].Trim().ToLowerInvariant()
 
-        $paOnly = $item.primerApellido.Trim()
+        $paOnly = $item.primerApellido.ToString().Trim()
         $saOpt = if ($item.segundoApellido -and $item.segundoApellido.ToString().Trim()) { $item.segundoApellido.ToString().Trim() } else { '' }
-        $candList = Get-AdSamLocalPartCandidates -GivenNameFull $givenName -Surname1 $paOnly -Surname2 $saOpt
         $samResolved = $null
         $upn = $null
-        # Primer candidato libre en AD gana (sAM único y UPN único); si todos están ocupados, se lanza error claro.
+
+        $reservedM365 = New-M365ReservedSamSetFromQueueItem -Item $item
+        if ($reservedM365.Count -gt 0) {
+            Write-QueueLog "sAM reservados por operativos M365: $(Format-M365ReservedSamSetForLog -Set $reservedM365)"
+        }
+
+        # 0) Identidad ya resuelta por Node (precheckResolved): usar tal cual si AD no tiene colisión.
+        $precheckResolved = $false
+        if ($item.PSObject.Properties.Name -contains 'precheckResolved') {
+            $precheckResolved = ($item.precheckResolved -eq $true)
+        }
+        if ($precheckResolved -and $item.samAccountName -and $item.userPrincipalName) {
+            $forceSam = (Truncate-AdSamLocalPart $item.samAccountName.ToString().Trim()).ToLowerInvariant()
+            $forceUpn = $upnRaw.ToLowerInvariant()
+            if ($forceSam -and $forceUpn) {
+                if (Test-M365ReservedSamSetContains -Set $reservedM365 -Sam $forceSam) {
+                    Write-QueueLog "precheckResolved: se omite sAM '$forceSam' (reservado por operativo en Microsoft 365); se buscarán variantes." "WARN"
+                } else {
+                    $samEscF = Escape-AdFilterValue $forceSam
+                    $upnEscF = Escape-AdFilterValue $forceUpn
+                    $existsSamF = Get-ADUser -Filter "SamAccountName -eq '$samEscF'" -ErrorAction SilentlyContinue
+                    $existsUpnF = Get-ADUser -Filter "UserPrincipalName -eq '$upnEscF'" -ErrorAction SilentlyContinue
+                    if (-not $existsSamF -and -not $existsUpnF) {
+                        $samResolved = $forceSam
+                        $upn = $forceUpn
+                        Write-QueueLog "precheckResolved: identidad fijada por Node (sin recalcular): $sam / $upn"
+                    } else {
+                        Write-QueueLog "precheckResolved: colisión en AD con identidad Node; se buscarán variantes." "WARN"
+                    }
+                }
+            }
+        }
+
+        # 1) Intentar samAccountName + userPrincipalName del JSON si no está reservado por un operativo en M365.
+        $jsonSamHint = $null
+        if ($item.samAccountName -and $item.samAccountName.ToString().Trim()) {
+            $jsonSamHint = (Truncate-AdSamLocalPart $item.samAccountName.ToString().Trim()).ToLowerInvariant()
+        }
+        if ($jsonSamHint -and (Test-M365ReservedSamSetContains -Set $reservedM365 -Sam $jsonSamHint)) {
+            Write-QueueLog "Se omite sAM del JSON '$jsonSamHint': ya usado por alta operativa en Microsoft 365."
+            $jsonSamHint = $null
+        }
+        if ($jsonSamHint) {
+            $samEscJson = Escape-AdFilterValue $jsonSamHint
+            $existsSamJson = Get-ADUser -Filter "SamAccountName -eq '$samEscJson'" -ErrorAction SilentlyContinue
+            if (-not $existsSamJson) {
+                $upnJson = $upnRaw.ToLowerInvariant()
+                $upnEscJson = Escape-AdFilterValue $upnJson
+                $existsUpnJson = Get-ADUser -Filter "UserPrincipalName -eq '$upnEscJson'" -ErrorAction SilentlyContinue
+                if (-not $existsUpnJson) {
+                    $samResolved = $jsonSamHint
+                    $upn = $upnJson
+                    Write-QueueLog "Usando sAM/UPN del JSON (prechequeo Node): $samResolved / $upn"
+                }
+            }
+        }
+
+        # 2) Si el par del JSON está ocupado en AD o reservado en M365, variantes locales.
+        if (-not $samResolved) {
+        $candList = Get-AdSamLocalPartCandidates -GivenNameFull $givenName -Surname1 $paOnly -Surname2 $saOpt
+        if ($null -eq $candList) { $candList = @() }
         foreach ($raw in $candList) {
             if ([string]::IsNullOrWhiteSpace($raw)) { continue }
             $trySam = (Truncate-AdSamLocalPart $raw).ToLowerInvariant()
             if ([string]::IsNullOrWhiteSpace($trySam)) { continue }
+            if (Test-M365ReservedSamSetContains -Set $reservedM365 -Sam $trySam) { continue }
             $samEscTry = Escape-AdFilterValue $trySam
             $existsSam = Get-ADUser -Filter "SamAccountName -eq '$samEscTry'" -ErrorAction SilentlyContinue
             if ($existsSam) { continue }
@@ -551,6 +682,7 @@ foreach ($f in $files) {
                 $upn = $tryUpn
                 break
             }
+        }
         }
         if (-not $samResolved) {
             throw "No se pudo asignar un sAMAccountName y UPN libres en Active Directory tras agotar las variantes permitidas (misma lógica que usuarios operativos)."

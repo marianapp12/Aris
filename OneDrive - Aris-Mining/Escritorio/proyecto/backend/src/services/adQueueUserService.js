@@ -13,6 +13,10 @@ import {
   PRECHECK_CODES,
 } from './graphAdministrativePrecheck.js';
 import { pickFirstAvailableSamAndUpnForAdQueue } from './adLdapSamAccountPick.js';
+import {
+  isCandidateSamBlockedByOperationalM365,
+  listOperationalM365ReservedSamAccountNames,
+} from './operationalUpnRegistry.js';
 import { assertEmployeeIdNotTakenInActiveDirectoryLdap } from './adLdapEmployeeIdPrecheck.js';
 import { assertNoPendingQueueFileWithEmployeeId } from './adQueuePendingEmployeeIdScan.js';
 import { assertEmployeeIdNotInProcessedRecords } from './adQueueProcessedEmployeeIdScan.js';
@@ -318,6 +322,7 @@ export async function enqueueAdUserRequest(body) {
       await assertNoPendingQueueFileWithEmployeeId(config.uncPath, employeeId);
       await assertEmployeeIdNotTakenInActiveDirectoryLdap(employeeId);
       const picked = await pickFirstAvailableSamAndUpnForAdQueue({
+        graphClient,
         givenName,
         surname1,
         surname2: surname2 || undefined,
@@ -347,6 +352,7 @@ export async function enqueueAdUserRequest(body) {
     await assertNoPendingQueueFileWithEmployeeId(config.uncPath, employeeId);
     await assertEmployeeIdNotTakenInActiveDirectoryLdap(employeeId);
     const pickedSkip = await pickFirstAvailableSamAndUpnForAdQueue({
+      graphClient: null,
       givenName,
       surname1,
       surname2: surname2 || undefined,
@@ -356,14 +362,31 @@ export async function enqueueAdUserRequest(body) {
     userPrincipalName = pickedSkip.userPrincipalName;
   }
 
+  const m365ReservedSamAccountNames = await listOperationalM365ReservedSamAccountNames();
+  if (isCandidateSamBlockedByOperationalM365(samAccountName, m365ReservedSamAccountNames)) {
+    throw new AdministrativePrecheckError(
+      PRECHECK_CODES.NO_UPN_AVAILABLE,
+      `El sAMAccountName "${samAccountName}" está reservado por un usuario operativo en Microsoft 365. No se encolará con el mismo UPN/correo.`,
+      422
+    );
+  }
+
   const email = userPrincipalName;
   const displayName = buildDisplayName(givenName, surname1, surname2 || undefined);
+  console.log(
+    `[AD-Queue] Encolando cédula=${employeeId} → sam=${samAccountName} upn=${userPrincipalName}` +
+      (m365ReservedSamAccountNames.length
+        ? ` | reservados M365 (memoria/JSON): ${m365ReservedSamAccountNames.join(', ')}`
+        : '')
+  );
 
   const payload = {
     queueAction: 'create',
     requestId,
     submittedAt: new Date().toISOString(),
     schemaVersion: config.schemaVersion,
+    precheckResolved: true,
+    m365ReservedSamAccountNames,
     primerNombre,
     segundoNombre: segundoNombre || undefined,
     primerApellido: surname1,

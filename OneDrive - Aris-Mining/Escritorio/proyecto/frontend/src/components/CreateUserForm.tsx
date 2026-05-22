@@ -8,6 +8,7 @@ import {
 } from '../types/user';
 import { isAdScriptDuplicateEmployeeIdMessage } from '../utils/adQueueScriptMessages';
 import {
+  checkExistingPersonByName,
   createOperationalUser,
   createUserViaAdQueue,
   getAdministrativeQueueRequestResult,
@@ -15,6 +16,7 @@ import {
   uploadBulkUsers,
   uploadAdministrativeBulkUsers,
 } from '../services/apiClient';
+import type { CheckExistingPersonResponse } from '../types/user';
 import {
   ADMINISTRATIVE_CITY_SELECT_OPTIONS,
   isAdministrativeCityFormValue,
@@ -478,6 +480,22 @@ const CreateUserForm = () => {
   /** Modal al fallar validación al enviar: lista de campos con error. */
   const [validationModalOpen, setValidationModalOpen] = useState(false);
   const [validationModalLines, setValidationModalLines] = useState<string[]>([]);
+  /** Modal si el nombre y apellidos ya existen en M365 o AD. */
+  const [duplicateConfirmOpen, setDuplicateConfirmOpen] = useState(false);
+  const [duplicateCheckInfo, setDuplicateCheckInfo] =
+    useState<CheckExistingPersonResponse | null>(null);
+  const pendingSubmitPayloadRef = useRef<{
+    givenName: string;
+    surname1: string;
+    surname2?: string;
+    jobTitle: string;
+    department: string;
+    sede?: string;
+    postalCode?: string;
+    employeeId?: string;
+    city?: string;
+  } | null>(null);
+  const [isCheckingDuplicate, setIsCheckingDuplicate] = useState(false);
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [bulkFile, setBulkFile] = useState<File | null>(null);
@@ -1032,8 +1050,109 @@ const CreateUserForm = () => {
     }
   };
 
+  const buildSubmitPayload = () => {
+    const rawPrimerNombre = formData.primerNombre.trim();
+    const rawSegundoNombre = formData.segundoNombre.trim();
+    const rawApellido1 = formData.apellido1.trim();
+    const rawApellido2 = formData.apellido2.trim();
+    const rawPuesto = formData.puesto.trim();
+    const rawDepartamento = formData.departamento.trim();
+
+    const primerNombreNorm = toTitleCase(rawPrimerNombre);
+    const segundoNombreNorm = rawSegundoNombre ? toTitleCase(rawSegundoNombre) : '';
+    const apellido1Norm = toTitleCase(rawApellido1);
+    const apellido2Norm = rawApellido2 ? toTitleCase(rawApellido2) : '';
+
+    const puestoNorm = rawPuesto.toUpperCase();
+    const departamentoNorm = rawDepartamento.toUpperCase();
+
+    const displayGivenName = [primerNombreNorm, segundoNombreNorm]
+      .filter(Boolean)
+      .join(' ');
+
+    return {
+      givenName: displayGivenName,
+      surname1: apellido1Norm,
+      surname2: apellido2Norm || undefined,
+      jobTitle: puestoNorm,
+      department: departamentoNorm,
+      ...(userCreationType === 'operational'
+        ? {
+            sede: formData.sede.trim(),
+            postalCode: formData.postalCode.replace(/\s/g, '').trim() || undefined,
+          }
+        : {}),
+      ...(userCreationType === 'administrative'
+        ? {
+            employeeId: formData.cedula.trim(),
+            city: formData.ciudad.trim(),
+            postalCode: formData.postalCode.replace(/\s/g, '').trim() || undefined,
+          }
+        : {}),
+    };
+  };
+
+  const performUserCreate = async (
+    payload: NonNullable<typeof pendingSubmitPayloadRef.current>
+  ) => {
+    if (userCreationType === 'operational') {
+      const response = await createOperationalUser(payload);
+      const principal = response.userPrincipalName || response.email;
+      const displayName = response.displayName;
+      const email = principal;
+      const userName = principal.split('@')[0];
+
+      setCreatedUser({
+        displayName,
+        userName,
+        email,
+        id: response?.id,
+        creationType: 'operational',
+        sede: response.sede,
+        groupObjectId: response.groupObjectId,
+        groupMemberAdded: response.groupMemberAdded,
+        groupMemberships: response.groupMemberships,
+      });
+      setStatus('success');
+    } else {
+      const accepted = await createUserViaAdQueue(payload);
+      setAdminEncoladoPropuesta(null);
+      setCreatedUser({
+        displayName: accepted.displayName,
+        userName: '',
+        email: '',
+        requestId: accepted.requestId,
+        creationType: 'administrative',
+        adminQueueAction: accepted.queueAction ?? 'create',
+        adOrganizationalUnitDn: accepted.adOrganizationalUnitDn,
+      });
+      setStatus('success');
+    }
+  };
+
+  const handleConfirmDuplicateCreate = async () => {
+    const payload = pendingSubmitPayloadRef.current;
+    if (!payload) {
+      setDuplicateConfirmOpen(false);
+      return;
+    }
+    setDuplicateConfirmOpen(false);
+    setDuplicateCheckInfo(null);
+    setStatus('loading');
+    try {
+      await performUserCreate(payload);
+    } catch (err) {
+      setStatus('error');
+      setErrorMessage(
+        err instanceof Error ? err.message : 'Error al crear el usuario'
+      );
+    } finally {
+      pendingSubmitPayloadRef.current = null;
+    }
+  };
+
   /**
-   * Envío: `createOperationalUser` (M365) o `createUserViaAdQueue` (JSON en carpeta); éxito → `createdUser` y UI de resultado.
+   * Envío: prechequeo por nombre → modal si ya existe → `createOperationalUser` o `createUserViaAdQueue`.
    */
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1047,94 +1166,33 @@ const CreateUserForm = () => {
       return;
     }
 
-    setStatus('loading');
+    const payload = buildSubmitPayload();
+    setIsCheckingDuplicate(true);
+    setErrorMessage('');
 
     try {
-      const rawPrimerNombre = formData.primerNombre.trim();
-      const rawSegundoNombre = formData.segundoNombre.trim();
-      const rawApellido1 = formData.apellido1.trim();
-      const rawApellido2 = formData.apellido2.trim();
-      const rawPuesto = formData.puesto.trim();
-      const rawDepartamento = formData.departamento.trim();
+      const check = await checkExistingPersonByName({
+        givenName: payload.givenName,
+        surname1: payload.surname1,
+        surname2: payload.surname2,
+      });
 
-      const primerNombreNorm = toTitleCase(rawPrimerNombre);
-      const segundoNombreNorm = rawSegundoNombre ? toTitleCase(rawSegundoNombre) : '';
-      const apellido1Norm = toTitleCase(rawApellido1);
-      const apellido2Norm = rawApellido2 ? toTitleCase(rawApellido2) : '';
-
-      const puestoNorm = rawPuesto.toUpperCase();
-      const departamentoNorm = rawDepartamento.toUpperCase();
-
-      const displayGivenName = [primerNombreNorm, segundoNombreNorm]
-        .filter(Boolean)
-        .join(' ');
-
-      const payload = {
-        givenName: displayGivenName,
-        surname1: apellido1Norm,
-        surname2: apellido2Norm || undefined,
-        jobTitle: puestoNorm,
-        department: departamentoNorm,
-        ...(userCreationType === 'operational'
-          ? {
-              sede: formData.sede.trim(),
-              postalCode: formData.postalCode.replace(/\s/g, '').trim() || undefined,
-            }
-          : {}),
-        ...(userCreationType === 'administrative'
-          ? {
-              employeeId: formData.cedula.trim(),
-              city: formData.ciudad.trim(),
-              postalCode: formData.postalCode.replace(/\s/g, '').trim() || undefined,
-            }
-          : {}),
-      };
-
-      if (userCreationType === 'operational') {
-        const response = await createOperationalUser(payload);
-        const principal = response.userPrincipalName || response.email;
-        const displayName = response.displayName;
-        const email = principal;
-        const userName = principal.split('@')[0];
-
-        setCreatedUser({
-          displayName,
-          userName,
-          email,
-          id: response?.id,
-          creationType: 'operational',
-          sede: response.sede,
-          groupObjectId: response.groupObjectId,
-          groupMemberAdded: response.groupMemberAdded,
-          groupMemberships: response.groupMemberships,
-        });
-        setStatus('success');
-      } else {
-        const accepted = await createUserViaAdQueue(payload);
-        const upn = accepted.userPrincipalName ?? '';
-        const localPart = upn.includes('@') ? upn.split('@')[0] : '';
-        const resolvedUserName = accepted.proposedUserName ?? (localPart || '—');
-        setAdminEncoladoPropuesta({
-          displayName: accepted.displayName,
-          userName: resolvedUserName,
-          email: upn || '—',
-        });
-        setCreatedUser({
-          displayName: accepted.displayName,
-          userName: resolvedUserName,
-          email: upn || '—',
-          requestId: accepted.requestId,
-          creationType: 'administrative',
-          adminQueueAction: accepted.queueAction ?? 'create',
-          adOrganizationalUnitDn: accepted.adOrganizationalUnitDn,
-        });
-        setStatus('success');
+      if (check.exists) {
+        pendingSubmitPayloadRef.current = payload;
+        setDuplicateCheckInfo(check);
+        setDuplicateConfirmOpen(true);
+        return;
       }
+
+      setStatus('loading');
+      await performUserCreate(payload);
     } catch (err) {
       setStatus('error');
       setErrorMessage(
         err instanceof Error ? err.message : 'Error al crear el usuario'
       );
+    } finally {
+      setIsCheckingDuplicate(false);
     }
   };
 
@@ -1695,8 +1753,8 @@ const CreateUserForm = () => {
                   : 'El usuario se registró en Active Directory. Use la tabla de confirmación para verificar nombres, UPN y usuario frente a “Usuarios y equipos de AD”.'
                 : isAdminProfileUpdate
                   ? 'La solicitud de actualización de datos se aplicará en Active Directory cuando el servidor procese el archivo; Azure AD Connect sincronizará los cambios con Microsoft 365 y puede tardar varios minutos.'
-                  : 'La solicitud se guardó en la cola del servidor. Al procesarse, los datos finales (nombre, UPN, usuario) pueden diferir de la propuesta; se mostrarán al confirmar abajo.'
-              : 'El usuario debe cambiar su contraseña en el primer inicio de sesión.'}
+                  : 'La solicitud se guardó en la cola del servidor. El UPN y el correo se mostrarán cuando Active Directory confirme el resultado del script.'
+              : 'El correo y el usuario se asignaron tras verificar la cola de AD y Microsoft 365. El usuario debe cambiar su contraseña en el primer inicio de sesión.'}
           </p>
 
           {createdUser.creationType === 'operational' && (
@@ -1772,72 +1830,35 @@ const CreateUserForm = () => {
                   </div>
                 )}
               </div>
-              {adminEncoladoPropuesta ? (
-                <details className="admin-ad-proposal-details">
-                  <summary>Valores propuestos al encolar (referencia)</summary>
-                  <div className="success-table" style={{ marginTop: 12 }}>
-                    <div className="success-row">
-                      <span className="success-label">NOMBRE (propuesta)</span>
-                      <span className="success-value muted">
-                        {adminEncoladoPropuesta.displayName}
-                      </span>
-                    </div>
-                    <div className="success-row">
-                      <span className="success-label">UPN / correo (propuesta)</span>
-                      <span className="success-value muted">
-                        {adminEncoladoPropuesta.email}
-                      </span>
-                    </div>
-                    <div className="success-row">
-                      <span className="success-label">Usuario (propuesta)</span>
-                      <span className="success-value muted mono">
-                        {adminEncoladoPropuesta.userName}
-                      </span>
-                    </div>
-                  </div>
-                </details>
-              ) : null}
             </>
           ) : null}
 
           {isAdmin && !adminAdIdentityConfirmed && (
             <>
-              <h3 className="admin-ad-section-h3">Propuesta al encolar</h3>
+              <h3 className="admin-ad-section-h3">Solicitud en cola</h3>
               <p className="admin-ad-lead">
-                Valores devueltos al aceptar la cola. El sAM/UPN definitivo lo fija el script en
-                Active Directory; al confirmar, se mostrarán abajo y podrán diferir.
+                Consultando Active Directory… El UPN, el correo y el usuario (sAM) se mostrarán
+                cuando el script confirme el resultado en el servidor.
               </p>
               <div className="success-table">
                 <div className="success-row">
-                  <span className="success-label">NOMBRE COMPLETO</span>
+                  <span className="success-label">NOMBRE (referencia)</span>
                   <span className="success-value">{createdUser.displayName}</span>
                 </div>
                 <div className="success-row">
-                  <span className="success-label">UPN / CORREO (propuesta)</span>
-                  <span
-                    className={
-                      adScriptResult?.status === 'error'
-                        ? 'success-value success-value--pending'
-                        : 'success-value highlight'
-                    }
-                  >
+                  <span className="success-label">UPN / CORREO</span>
+                  <span className="success-value success-value--pending">
                     {adScriptResult?.status === 'error'
                       ? 'No confirmado en AD — detalle en “Estado de procesamiento en el servidor”.'
-                      : createdUser.email}
+                      : 'Pendiente de confirmación en Active Directory…'}
                   </span>
                 </div>
                 <div className="success-row">
-                  <span className="success-label">USUARIO (propuesta)</span>
-                  <span
-                    className={
-                      adScriptResult?.status === 'error'
-                        ? 'success-value success-value--pending'
-                        : 'success-value'
-                    }
-                  >
+                  <span className="success-label">USUARIO (sAM)</span>
+                  <span className="success-value success-value--pending">
                     {adScriptResult?.status === 'error'
                       ? 'No confirmado en AD — vea abajo.'
-                      : createdUser.userName}
+                      : 'Pendiente de confirmación en Active Directory…'}
                   </span>
                 </div>
                 {createdUser.requestId && (
@@ -1876,7 +1897,7 @@ const CreateUserForm = () => {
                   el usuario deberá cambiarla en el primer inicio de sesión.{' '}
                   {adminAdIdentityConfirmed
                     ? 'Los valores de “Valores en Active Directory” son el referente comprobado con el directorio; si aún duda, abra el objeto de usuario en AD.'
-                    : 'Cuando el script confirme, verá en pantalla el nombre, UPN y usuario definitivos; pueden diferir de la fila de propuesta de arriba.'}
+                    : 'Cuando el script confirme, verá en pantalla el UPN, el correo y el usuario definitivos en la sección “Valores en Active Directory”.'}
                 </>
               )
             ) : (
@@ -2585,11 +2606,13 @@ const CreateUserForm = () => {
       <button
         type="submit"
         className="primary-btn"
-        disabled={status === 'loading'}
+        disabled={status === 'loading' || isCheckingDuplicate || duplicateConfirmOpen}
       >
-        {status === 'loading'
-          ? 'Creando usuario…'
-          : userCreationType === 'operational'
+        {isCheckingDuplicate
+          ? 'Verificando en el directorio…'
+          : status === 'loading'
+            ? 'Creando usuario…'
+            : userCreationType === 'operational'
               ? 'Crear usuario operativo'
               : 'Crear usuario administrativo (AD)'}
       </button>
@@ -2630,6 +2653,82 @@ const CreateUserForm = () => {
             >
               Entendido
             </button>
+          </div>
+        </div>
+      )}
+
+      {duplicateConfirmOpen && duplicateCheckInfo && (
+        <div
+          className="validation-modal-backdrop"
+          role="presentation"
+          onClick={() => {
+            setDuplicateConfirmOpen(false);
+            setDuplicateCheckInfo(null);
+            pendingSubmitPayloadRef.current = null;
+          }}
+        >
+          <div
+            className="validation-modal validation-modal--confirm"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="duplicate-confirm-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="duplicate-confirm-modal-title" className="validation-modal-title">
+              Persona ya registrada
+            </h2>
+            <p className="validation-modal-lead">
+              Ya existe una cuenta con el mismo <strong>nombre y apellidos</strong> (
+              <strong>{duplicateCheckInfo.displayName}</strong>) en el directorio. Revise si es la misma
+              persona antes de continuar.
+            </p>
+            <ul className="validation-modal-list">
+              {duplicateCheckInfo.microsoft365 && (
+                <li>
+                  <strong>Microsoft 365:</strong>{' '}
+                  {duplicateCheckInfo.microsoft365.userPrincipalName ||
+                    duplicateCheckInfo.microsoft365.displayName}
+                  {duplicateCheckInfo.microsoft365.employeeId
+                    ? ` (cédula / id. empleado: ${duplicateCheckInfo.microsoft365.employeeId})`
+                    : ''}
+                </li>
+              )}
+              {duplicateCheckInfo.activeDirectory && (
+                <li>
+                  <strong>Active Directory:</strong>{' '}
+                  {duplicateCheckInfo.activeDirectory.samAccountName ||
+                    duplicateCheckInfo.activeDirectory.userPrincipalName ||
+                    duplicateCheckInfo.activeDirectory.displayName}
+                  {duplicateCheckInfo.activeDirectory.employeeId
+                    ? ` (cédula / employeeID: ${duplicateCheckInfo.activeDirectory.employeeId})`
+                    : ''}
+                </li>
+              )}
+            </ul>
+            <p className="validation-modal-lead validation-modal-lead--tight">
+              Si confirma, se creará o encolará la solicitud de todas formas (puede generar otra cuenta
+              técnica con sufijo distinto). Si no es correcto, pulse <strong>Cancelar</strong>.
+            </p>
+            <div className="validation-modal-actions">
+              <button
+                type="button"
+                className="secondary-btn validation-modal-cancel"
+                onClick={() => {
+                  setDuplicateConfirmOpen(false);
+                  setDuplicateCheckInfo(null);
+                  pendingSubmitPayloadRef.current = null;
+                }}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="primary-btn validation-modal-confirm"
+                onClick={() => void handleConfirmDuplicateCreate()}
+              >
+                Aceptar y crear
+              </button>
+            </div>
           </div>
         </div>
       )}

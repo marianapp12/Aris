@@ -12,9 +12,9 @@ import {
 } from '../config/adQueueConfig.js';
 import {
   enqueueAdUserRequest,
-  proposeAdministrativeUsername,
   testAdQueueUncWrite,
 } from '../services/adQueueUserService.js';
+import { getGraphClient } from '../config/graphClient.js';
 import { AdministrativePrecheckError } from '../services/graphAdministrativePrecheck.js';
 import { pickFirstAvailableSamAndUpnForAdQueue } from '../services/adLdapSamAccountPick.js';
 import { parseAdministrativeBulkSheet } from '../utils/excelAdministrativeBulkParse.js';
@@ -145,19 +145,20 @@ export const getNextAdministrativeUsername = async (req, res) => {
       });
     }
 
-    if (config.skipGraphPrecheck) {
-      const { sAMAccountName, userPrincipalName } = proposeAdministrativeUsername(
-        givenName,
-        surname1,
-        surname2 || undefined
-      );
-      return res.json({
-        userName: sAMAccountName,
-        userPrincipalName,
-      });
+    let graphClient = null;
+    if (!config.skipGraphPrecheck) {
+      try {
+        graphClient = getGraphClient();
+      } catch (e) {
+        return res.status(503).json({
+          error: 'Microsoft Graph no disponible',
+          message: e?.message || 'No se pudo inicializar Microsoft Graph (revise AZURE_* en .env).',
+        });
+      }
     }
 
     const picked = await pickFirstAvailableSamAndUpnForAdQueue({
+      graphClient,
       givenName,
       surname1,
       surname2: surname2 || undefined,

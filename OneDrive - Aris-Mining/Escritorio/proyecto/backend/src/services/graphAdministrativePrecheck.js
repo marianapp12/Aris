@@ -91,12 +91,14 @@ export async function pickAvailableSamAndUpn(graphClient, params) {
 }
 
 /**
- * Propuesta de sAM/UPN para cola AD: misma secuencia que operativos, disponibilidad contra AD (LDAP).
+ * Propuesta de sAM/UPN para cola AD: carpetas → Graph → LDAP (misma regla que encolar).
+ * @param {import('@microsoft/microsoft-graph-client').Client} graphClient
  * @param {{ givenName: string, surname1: string, surname2?: string, emailDomain: string }} params
  */
-export async function runAdministrativeGraphPrecheck(params) {
+export async function runAdministrativeGraphPrecheck(graphClient, params) {
   try {
     return await pickFirstAvailableSamAndUpnForAdQueue({
+      graphClient,
       givenName: params.givenName,
       surname1: params.surname1,
       surname2: params.surname2,

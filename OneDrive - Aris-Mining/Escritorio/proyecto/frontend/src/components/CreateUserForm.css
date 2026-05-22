@@ -1082,6 +1082,26 @@
   width: 100%;
 }
 
+.validation-modal--confirm {
+  max-width: 480px;
+}
+
+.validation-modal-lead--tight {
+  margin-bottom: 18px;
+}
+
+.validation-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.validation-modal-actions .validation-modal-cancel,
+.validation-modal-actions .validation-modal-confirm {
+  flex: 1 1 140px;
+  min-width: 120px;
+}
+
 /* Confirmación de identidad en AD (alta administrativa) */
 .admin-ad-section-h3 {
   font-size: 11px;

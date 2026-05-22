@@ -5,9 +5,16 @@ import {
   getNextUsername,
   createOperationalUsersBulk,
 } from '../controllers/operationalUsersController.js';
+import { checkExistingPerson } from '../controllers/personExistsController.js';
 
 const router = express.Router();
 const upload = multer();
+
+/**
+ * POST /api/users/check-existing-person
+ * Comprueba si el nombre y apellidos ya existen en Microsoft 365 o Active Directory.
+ */
+router.post('/check-existing-person', checkExistingPerson);
 
 /**
  * GET /api/users/next-username

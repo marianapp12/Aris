@@ -49,6 +49,22 @@ export interface NextUsernameResponse {
   userPrincipalName: string;
 }
 
+/** Coincidencia en directorio (M365 o AD) al verificar nombre + apellidos. */
+export interface ExistingPersonDirectoryMatch {
+  displayName: string;
+  userPrincipalName?: string;
+  employeeId?: string;
+  samAccountName?: string;
+}
+
+/** POST /api/users/check-existing-person */
+export interface CheckExistingPersonResponse {
+  exists: boolean;
+  displayName: string;
+  microsoft365: ExistingPersonDirectoryMatch | null;
+  activeDirectory: ExistingPersonDirectoryMatch | null;
+}
+
 /** Respuesta 202 al encolar creación o actualización administrativa vía carpeta compartida (SMB). */
 export interface AdQueueCreationAccepted {
   requestId: string;

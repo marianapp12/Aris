@@ -105,6 +105,61 @@ export function getAdQueueProcessedTtlHours() {
 /**
  * @throws {Error} si falta configuración obligatoria
  */
+/** Dominios UPN del tenant usados al consultar Graph (admin + operativo). */
+export function getTenantUpnDomains() {
+  const domains = new Set();
+  const admin = process.env.AD_QUEUE_EMAIL_DOMAIN?.trim();
+  const operational = process.env.OPERATIONAL_UPN_DOMAIN?.trim();
+  if (admin) domains.add(admin.toLowerCase());
+  if (operational) domains.add(operational.toLowerCase());
+  return [...domains];
+}
+
+/**
+ * Reintentos Graph al encolar administrativos (operativo recién creado en M365 puede tardar en indexarse).
+ * @returns {{ retry: true, retryAttempts: number, retryDelayMs: number }}
+ */
+export function getAdminGraphPrecheckRetryOptions() {
+  const attempts = Number(process.env.AD_QUEUE_GRAPH_PRECHECK_RETRY_ATTEMPTS);
+  const delayMs = Number(process.env.AD_QUEUE_GRAPH_PRECHECK_RETRY_DELAY_MS);
+  return {
+    retry: true,
+    retryAttempts: Number.isFinite(attempts) && attempts > 0 ? Math.floor(attempts) : 8,
+    retryDelayMs: Number.isFinite(delayMs) && delayMs > 0 ? Math.floor(delayMs) : 2000,
+  };
+}
+
+/**
+ * Espejos SMB (resultado-operativo-m365-*, .reservado-m365-*) tras alta operativa.
+ * Por defecto desactivado: prechequeo admin vía Microsoft Graph + memoria de sesión + cola AD.
+ */
+export function isOperationalM365SmbMirrorEnabled() {
+  const v = process.env.OPERATIONAL_M365_SMB_MIRROR;
+  return v === 'true' || v === '1';
+}
+
+/** Advertencias de configuración que afectan detección de UPN duplicado entre flujos. */
+export function logUpnPrecheckConfigWarnings() {
+  const admin = process.env.AD_QUEUE_EMAIL_DOMAIN?.trim() || '';
+  const operational = process.env.OPERATIONAL_UPN_DOMAIN?.trim() || '';
+  if (admin && operational && admin.toLowerCase() !== operational.toLowerCase()) {
+    console.warn(
+      '[Config] AD_QUEUE_EMAIL_DOMAIN y OPERATIONAL_UPN_DOMAIN difieren; el prechequeo Graph puede no detectar un operativo ya creado en M365 al encolar administrativos.'
+    );
+  }
+  const skip = process.env.AD_QUEUE_SKIP_GRAPH_PRECHECK;
+  if (skip === 'true' || skip === '1') {
+    console.warn(
+      '[Config] AD_QUEUE_SKIP_GRAPH_PRECHECK activo: el encolado administrativo no consultará Microsoft Graph para UPN/correo (solo carpetas/LDAP).'
+    );
+  }
+  if (!isOperationalM365SmbMirrorEnabled()) {
+    console.log(
+      '[Config] Espejos M365 en carpetas SMB desactivados (OPERATIONAL_M365_SMB_MIRROR); administrativos: Graph → cola AD → LDAP.'
+    );
+  }
+}
+
 export function assertAdQueueConfigured() {
   const c = getAdQueueConfig();
   if (!c.uncPath) {
