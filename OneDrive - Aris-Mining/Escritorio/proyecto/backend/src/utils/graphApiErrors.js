@@ -1,7 +1,3 @@
-/**
- * Resumen legible de errores típicos de Microsoft Graph / @microsoft/microsoft-graph-client.
- * @param {unknown} err
- */
 export function summarizeGraphError(err) {
   if (!err || typeof err !== 'object') {
     return { statusLabel: '?', summary: String(err), code: '' };
@@ -34,11 +30,6 @@ export function summarizeGraphError(err) {
   return { statusLabel: String(status), summary, code };
 }
 
-/**
- * Log en una línea (estilo [LDAP]) para errores de Graph en consola.
- * @param {string} context - ej. "crear usuario operativo"
- * @param {unknown} err
- */
 export function logGraphApiError(context, err) {
   const { statusLabel, summary, code } = summarizeGraphError(err);
   const codePart = code ? ` ${code}` : '';

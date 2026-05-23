@@ -5,18 +5,17 @@ import {
 
 const onlyLettersRegex = /[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s-]/;
 const hasInvalidCharsForName = (value) => value && onlyLettersRegex.test(value);
-/** Cédula / ID empleado: solo dígitos, 5–32 (obligatorio en flujo administrativo). */
+/** Cédula: solo dígitos, 5–32. */
 export const EMPLOYEE_ID_MIN_LENGTH = 5;
 export const EMPLOYEE_ID_MAX_LENGTH = 32;
 const employeeIdRegex = new RegExp(
   `^[0-9]{${EMPLOYEE_ID_MIN_LENGTH},${EMPLOYEE_ID_MAX_LENGTH}}$`
 );
 
-/** Alineado con flujo operativo M365 (centro de costos en UI; body `postalCode`). */
+/** Centro de costos: mismo rango que operativo (postalCode). */
 export const ADMIN_POSTAL_MIN = 4;
 export const ADMIN_POSTAL_MAX = 10;
 
-/** Puesto y departamento: mismas reglas que nombres (solo letras, espacios, guiones). */
 const hasInvalidCharsForJobOrDept = (value) => hasInvalidCharsForName(value);
 
 export function normalizeAdministrativePostalCode(raw) {

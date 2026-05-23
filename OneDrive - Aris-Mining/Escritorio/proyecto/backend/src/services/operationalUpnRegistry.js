@@ -36,7 +36,7 @@ export function isOperationalAccountReservedInMemory(sam, userPrincipalName) {
 }
 
 /**
- * El candidato es el mismo sAM base que uno reservado (p. ej. reservado mariana.penagos bloquea candidato mariana.penagos, no mariana.penagos.1).
+ * El candidato es el mismo sAM base que uno reservado (p. ej. reservado usuario.ejemplo bloquea candidato usuario.ejemplo, no usuario.ejemplo.1).
  * @param {string} candidateSam
  * @param {string} reservedSam
  */

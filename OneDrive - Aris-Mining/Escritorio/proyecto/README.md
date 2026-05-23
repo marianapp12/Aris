@@ -279,9 +279,9 @@ Crea un nuevo usuario operativo en Microsoft 365.
 **Request:**
 ```json
 {
-  "givenName": "Juan",
-  "surname1": "Pérez",
-  "surname2": "García",
+  "givenName": "Ejemplo",
+  "surname1": "Usuario",
+  "surname2": "Prueba",
   "jobTitle": "Desarrollador",
   "department": "TI",
   "sede": "Bogotá",
@@ -295,9 +295,9 @@ Crea un nuevo usuario operativo en Microsoft 365.
 ```json
 {
   "id": "user-id-from-m365",
-  "userPrincipalName": "juan.perez@empresa.example.com",
-  "displayName": "Juan Pérez",
-  "email": "juan.perez@empresa.example.com",
+  "userPrincipalName": "ejemplo.usuario@empresa.example.com",
+  "displayName": "Ejemplo Usuario",
+  "email": "ejemplo.usuario@empresa.example.com",
   "message": "Usuario creado exitosamente en Microsoft 365"
 }
 ```
@@ -316,9 +316,9 @@ Encola la creación corporativa en Active Directory escribiendo **`pendiente-{re
   "requestId": "uuid",
   "message": "Solicitud encolada...",
   "queuePath": "\\\\SERVIDOR\\RECURSO_COMPARTIDO\\pending\\pendiente-uuid.json",
-  "proposedUserName": "juan.perez",
-  "userPrincipalName": "juan.perez@empresa.example.com",
-  "displayName": "Juan Pérez"
+  "proposedUserName": "ejemplo.usuario",
+  "userPrincipalName": "ejemplo.usuario@empresa.example.com",
+  "displayName": "Ejemplo Usuario"
 }
 ```
 
@@ -360,9 +360,9 @@ Por cada fila válida se aplica la misma lógica que **`POST /api/users/administ
       "row": 3,
       "status": "success",
       "requestId": "uuid",
-      "userPrincipalName": "juan.perez@empresa.example.com",
-      "displayName": "Juan Pérez",
-      "proposedUserName": "juan.perez"
+      "userPrincipalName": "ejemplo.usuario@empresa.example.com",
+      "displayName": "Ejemplo Usuario",
+      "proposedUserName": "ejemplo.usuario"
     },
     { "row": 4, "status": "error", "message": "…" }
   ]

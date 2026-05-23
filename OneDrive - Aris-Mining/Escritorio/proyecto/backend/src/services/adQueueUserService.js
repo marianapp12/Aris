@@ -13,10 +13,14 @@ import {
   PRECHECK_CODES,
 } from './graphAdministrativePrecheck.js';
 import { pickFirstAvailableSamAndUpnForAdQueue } from './adLdapSamAccountPick.js';
+import { invalidateQueueSamUpnIndexCache } from './operationalAccountAvailability.js';
+import { registerRecentPersonByName } from './operationalPersonRegistry.js';
 import {
   isCandidateSamBlockedByOperationalM365,
   listOperationalM365ReservedSamAccountNames,
 } from './operationalUpnRegistry.js';
+import { isUpnOrMailNicknameTaken } from './graphUpnTakenCheck.js';
+import { getAdminGraphPrecheckRetryOptions } from '../config/adQueueConfig.js';
 import { assertEmployeeIdNotTakenInActiveDirectoryLdap } from './adLdapEmployeeIdPrecheck.js';
 import { assertNoPendingQueueFileWithEmployeeId } from './adQueuePendingEmployeeIdScan.js';
 import { assertEmployeeIdNotInProcessedRecords } from './adQueueProcessedEmployeeIdScan.js';
@@ -364,11 +368,33 @@ export async function enqueueAdUserRequest(body) {
 
   const m365ReservedSamAccountNames = await listOperationalM365ReservedSamAccountNames();
   if (isCandidateSamBlockedByOperationalM365(samAccountName, m365ReservedSamAccountNames)) {
-    throw new AdministrativePrecheckError(
-      PRECHECK_CODES.NO_UPN_AVAILABLE,
-      `El sAMAccountName "${samAccountName}" está reservado por un usuario operativo en Microsoft 365. No se encolará con el mismo UPN/correo.`,
-      422
-    );
+    let reservedStillLive = false;
+    if (!config.skipGraphPrecheck) {
+      try {
+        const graphClient = getGraphClient();
+        reservedStillLive = await isUpnOrMailNicknameTaken(
+          graphClient,
+          userPrincipalName,
+          samAccountName,
+          getAdminGraphPrecheckRetryOptions()
+        );
+      } catch (e) {
+        console.warn(
+          '[AD-Queue] No se pudo verificar reserva M365 en Graph; se mantiene bloqueo por precaución:',
+          e?.message || e
+        );
+        reservedStillLive = true;
+      }
+    } else {
+      reservedStillLive = true;
+    }
+    if (reservedStillLive) {
+      throw new AdministrativePrecheckError(
+        PRECHECK_CODES.NO_UPN_AVAILABLE,
+        `El sAMAccountName "${samAccountName}" está reservado por un usuario operativo en Microsoft 365. No se encolará con el mismo UPN/correo.`,
+        422
+      );
+    }
   }
 
   const email = userPrincipalName;
@@ -412,6 +438,15 @@ export async function enqueueAdUserRequest(body) {
   try {
     await assertNoPendingQueueFileWithEmployeeId(config.uncPath, employeeId);
     await fs.writeFile(targetPath, json, 'utf8');
+    registerRecentPersonByName({
+      givenName,
+      surname1,
+      surname2: surname2 || undefined,
+      samAccountName,
+      userPrincipalName,
+      email,
+    });
+    invalidateQueueSamUpnIndexCache();
   } catch (e) {
     if (e instanceof AdministrativePrecheckError) throw e;
     throw mapWriteError(e);

@@ -1,13 +1,8 @@
-/**
- * Sedes administrativas: etiquetas de UI/Excel → bucket para OU; nombre legible para atributo City en AD.
- * OU de creación: OU hoja + contenedor (AD_QUEUE_OU_DN). Por defecto OU=Medellin|Marmato|Segovia; con AD_QUEUE_OU_LEAF_PREFIX
- * (p. ej. Usuarios-Office365Sync) → OU=Usuarios-Office365Sync-Medellin,contenedor. El JSON `city` = texto legible en AD (City).
- */
+/** UI/Excel → bucket OU (Medellin|Marmato|Segovia); city = City en AD; OU bajo AD_QUEUE_OU_DN (+ prefijo opcional). */
 
-/** Valores permitidos en API/cola tras normalizar (también aceptados como entrada directa). */
 export const ADMINISTRATIVE_CITY_SITE_BUCKETS = Object.freeze(['Medellin', 'Marmato', 'Segovia']);
 
-/** Etiquetas exactas permitidas en formulario y Excel (seis opciones). */
+/** Seis etiquetas válidas en formulario y Excel. */
 export const ADMINISTRATIVE_CITY_DISPLAY_LABELS = Object.freeze([
   'Segovia',
   'Medellín',
@@ -17,11 +12,7 @@ export const ADMINISTRATIVE_CITY_DISPLAY_LABELS = Object.freeze([
   'Lower Mine',
 ]);
 
-/**
- * Clave estable para comparar ciudad/sede (Excel: minúsculas, sin tilde, espacios raros, NBSP).
- * @param {unknown} input
- * @returns {string} solo [a-z0-9] o cadena vacía
- */
+/** Clave [a-z0-9] para comparar sede (sin tildes, NBSP, etc.). */
 export function administrativeCityNormalizedKey(input) {
   return String(input ?? '')
     .trim()
@@ -46,10 +37,6 @@ const CITY_KEY_TO_BUCKET_AND_DISPLAY = Object.freeze({
   overmine: { bucket: 'Segovia', display: 'Lower Mine' },
 });
 
-/**
- * @param {unknown} input - etiqueta de sede o bucket canónico
- * @returns {'Medellin' | 'Marmato' | 'Segovia' | null}
- */
 export function mapAdministrativeCityInputToBucket(input) {
   const raw = String(input ?? '').trim();
   if (!raw) return null;
@@ -61,11 +48,7 @@ export function mapAdministrativeCityInputToBucket(input) {
   return null;
 }
 
-/**
- * Valor para el atributo City en AD y campo `city` del JSON de cola: nombre legible (Medellín, Bogotá, PSN, …).
- * @param {unknown} raw
- * @returns {string}
- */
+/** Texto legible para City en AD y campo city del JSON de cola. */
 export function normalizeAdministrativeCityDisplayForAd(raw) {
   const t = String(raw ?? '').trim();
   if (!t) return '';
@@ -77,11 +60,7 @@ export function normalizeAdministrativeCityDisplayForAd(raw) {
   return t;
 }
 
-/**
- * DN de OU hoja para New-ADUser -Path.
- * @param {'Medellin' | 'Marmato' | 'Segovia'} siteBucket
- * @param {string} parentDn - contenedor LDAP (valor de AD_QUEUE_OU_DN), sin coma inicial
- */
+/** OU hoja para New-ADUser -Path (AD_QUEUE_OU_LEAF_PREFIX opcional). */
 export function buildAdministrativeOuDn(siteBucket, parentDn) {
   const parent = String(parentDn ?? '').trim();
   if (!parent) {

@@ -52,7 +52,7 @@ Borra los archivos de la cola en las carpetas hermanas de `pending` (misma raíz
 | `procesados` | `procesado-employeeId-*.json` |
 | `error` | JSON de solicitudes fallidas |
 
-Con tu `.env` típico (`AD_QUEUE_UNC=\\10.10.11.4\scripts\pending`):
+Con la misma raíz que `AD_QUEUE_UNC` en el backend (p. ej. `\\SERVIDOR\scripts\pending`):
 
 ```powershell
 # Simulación (solo lista)
@@ -62,7 +62,7 @@ Con tu `.env` típico (`AD_QUEUE_UNC=\\10.10.11.4\scripts\pending`):
 .\Clear-AdQueueTestArtifacts.ps1 -Force
 
 # Otra raíz
-.\Clear-AdQueueTestArtifacts.ps1 -ScriptsRoot '\\10.10.11.4\scripts' -Force
+.\Clear-AdQueueTestArtifacts.ps1 -ScriptsRoot '\\SERVIDOR\scripts' -Force
 ```
 
 Tras limpiar: **reinicie el backend** (`npm run dev`) para vaciar reservas M365 en memoria de Node.
@@ -103,7 +103,7 @@ Eso casi siempre significa que **el script no se ejecuta hasta la siguiente pasa
 - Argumentos (añadir **`-Continuous`**; ajustar rutas y OU):
 
 ```text
--NoProfile -ExecutionPolicy Bypass -File "C:\scripts\Process-AdUserQueue.ps1" -Continuous -IdleSleepMilliseconds 300 -QueuePath "\\10.10.11.9\scripts\pending" -OrganizationalUnit "OU=Usuarios-Office365Sync-Marmato,OU=Usuarios,DC=corp,DC=local" -DefaultCompany "Mi Empresa"
+-NoProfile -ExecutionPolicy Bypass -File "C:\scripts\Process-AdUserQueue.ps1" -Continuous -IdleSleepMilliseconds 300 -QueuePath "\\SERVIDOR\scripts\pending" -OrganizationalUnit "OU=Usuarios-Sync-Sede,OU=Usuarios,DC=corp,DC=local" -DefaultCompany "Mi Empresa"
 ```
 
 Para probar: clic derecho en la tarea → **Ejecutar**. Para detener el bucle: finalizar el proceso `powershell` asociado o deshabilitar la tarea.
@@ -123,12 +123,12 @@ Desencadenador con **Repetir la tarea cada** *N* + **No iniciar una nueva instan
 Argumentos **sin** `-Continuous`:
 
 ```text
--NoProfile -ExecutionPolicy Bypass -File "C:\scripts\Process-AdUserQueue.ps1" -QueuePath "\\10.10.11.9\scripts\pending" -OrganizationalUnit "OU=Usuarios-Office365Sync-Marmato,OU=Usuarios,DC=corp,DC=local" -DefaultCompany "Mi Empresa"
+-NoProfile -ExecutionPolicy Bypass -File "C:\scripts\Process-AdUserQueue.ps1" -QueuePath "\\SERVIDOR\scripts\pending" -OrganizationalUnit "OU=Usuarios-Sync-Sede,OU=Usuarios,DC=corp,DC=local" -DefaultCompany "Mi Empresa"
 ```
 
 ### OU, correo y cédula
 
-- **OU y sede:** el backend construye `queueMetadata.ouDn` con **`AD_QUEUE_OU_DN`** y, si define **`AD_QUEUE_OU_LEAF_PREFIX`** (p. ej. `Usuarios-Office365Sync`), como `OU=Usuarios-Office365Sync-Medellin|...-Marmato|...-Segovia,<contenedor>`. Sin prefijo: `OU=Medellin|...,<contenedor>`. Ese `ouDn` tiene prioridad sobre `-OrganizationalUnit`. Si el JSON no trae `queueMetadata.ouDn`, se usa `-OrganizationalUnit` (debe coincidir con la estructura real del AD).
+- **OU y sede:** el backend construye `queueMetadata.ouDn` con **`AD_QUEUE_OU_DN`** y, si define **`AD_QUEUE_OU_LEAF_PREFIX`** (p. ej. `Usuarios-Office365Sync`), como `OU=Usuarios-Office365Sync-SedeA|...-SedeB|...-SedeC,<contenedor>`. Sin prefijo: `OU=SedeA|...,<contenedor>`. Ese `ouDn` tiene prioridad sobre `-OrganizationalUnit`. Si el JSON no trae `queueMetadata.ouDn`, se usa `-OrganizationalUnit` (debe coincidir con la estructura real del AD en su entorno).
 
 - **Correo y organización en AD:** el script asigna `-EmailAddress` con el campo `email` del JSON (si falta, usa el UPN). El atributo **Company** se toma de `empresa` (env `AD_QUEUE_COMPANY` en Node), o `company` en el JSON, o `queueMetadata.company`, o `-DefaultCompany` en la tarea.
 
@@ -151,4 +151,4 @@ Los JSON que fallen se mueven a la subcarpeta `error\` junto a un `.log` con el 
 
 ### Contraseña
 
-El script del repo usa por defecto la contraseña fija **Nuevo12*2026** para administrativos; cámbiela en `New-AdSafePassword` si su política lo exige. Si el backend envía `queueMetadata.initialPasswordFromQueue` (`AD_QUEUE_INITIAL_PASSWORD` en Node), puede adaptar el script para usarla; evite contraseñas en claro salvo política explícita.
+El script del repo usa por defecto una contraseña inicial fija (ver `New-AdSafePassword` en el `.ps1`); cámbiela si su política lo exige. Si el backend envía `queueMetadata.initialPasswordFromQueue` (`AD_QUEUE_INITIAL_PASSWORD` en Node), puede adaptar el script para usarla; evite contraseñas en claro salvo política explícita.

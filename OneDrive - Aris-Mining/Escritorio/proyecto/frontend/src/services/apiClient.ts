@@ -11,6 +11,7 @@ import {
   AdQueueConnectionTestResult,
   AdQueueRequestResult,
   CheckExistingPersonResponse,
+  BulkPrecheckApiResponse,
 } from '../types/user';
 
 /**
@@ -59,6 +60,8 @@ export const checkExistingPersonByName = async (payload: {
   givenName: string;
   surname1: string;
   surname2?: string;
+  /** Cédula / ID (alta administrativa): prechequeo en M365 y carpetas de cola. */
+  employeeId?: string;
 }): Promise<CheckExistingPersonResponse> => {
   try {
     const response = await apiClient.post<CheckExistingPersonResponse>(
@@ -78,11 +81,16 @@ export const createOperationalUser = async (
   payload: CreateUserRequest
 ): Promise<CreateUserResponse> => {
   try {
-    const response = await apiClient.post<CreateUserResponse>(
-      '/users/operational',
-      payload
-    );
-    return response.data;
+    const response = await apiClient.post<CreateUserResponse>('/users/operational', payload, {
+      validateStatus: () => true,
+    });
+    if (response.status >= 200 && response.status < 300) {
+      return response.data;
+    }
+    const data = response.data as { message?: string; error?: string };
+    const message =
+      data?.message || data?.error || `Error al crear el usuario operativo (${response.status})`;
+    throw new Error(message);
   } catch (error) {
     throw new Error(getAxiosErrorMessage(error, 'Error al crear el usuario'));
   }
@@ -285,20 +293,72 @@ export interface BulkUploadApiResponse {
   results?: unknown[];
 }
 
-/** Excel masivo operativo: envía multipart a `/users/operational/bulk`. */
-export const uploadBulkUsers = async (file: File): Promise<BulkUploadApiResponse> => {
+async function postBulkMultipart(
+  path: string,
+  file: File,
+  omitRows: number[]
+): Promise<BulkUploadApiResponse> {
   const formData = new FormData();
   formData.append('file', file);
+  if (omitRows.length > 0) {
+    formData.append('omitRows', JSON.stringify(omitRows));
+  }
+  const response = await apiClient.post(path, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return response.data;
+}
 
+/** Prechequeo masivo operativo (duplicados por fila, sin crear). */
+export const precheckBulkOperationalUsers = async (
+  file: File
+): Promise<BulkPrecheckApiResponse> => {
+  const formData = new FormData();
+  formData.append('file', file);
   try {
-    const response = await apiClient.post('/users/operational/bulk', formData, {
-      headers: {
-        // Deja que el navegador establezca el boundary correcto
-        'Content-Type': 'multipart/form-data',
-      },
-    });
-
+    const response = await apiClient.post<BulkPrecheckApiResponse>(
+      '/users/operational/bulk-precheck',
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' } }
+    );
     return response.data;
+  } catch (error) {
+    throw new Error(
+      getAxiosErrorMessage(error, 'No se pudo verificar duplicados en el archivo Excel.')
+    );
+  }
+};
+
+/** Prechequeo masivo administrativo. */
+export const precheckBulkAdministrativeUsers = async (
+  file: File
+): Promise<BulkPrecheckApiResponse> => {
+  const formData = new FormData();
+  formData.append('file', file);
+  try {
+    const response = await apiClient.post<BulkPrecheckApiResponse>(
+      '/users/administrative/bulk-precheck',
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' } }
+    );
+    return response.data;
+  } catch (error) {
+    throw new Error(
+      getAxiosErrorMessage(
+        error,
+        'No se pudo verificar duplicados en el archivo administrativo.'
+      )
+    );
+  }
+};
+
+/** Excel masivo operativo: envía multipart a `/users/operational/bulk`. */
+export const uploadBulkUsers = async (
+  file: File,
+  omitRows: number[] = []
+): Promise<BulkUploadApiResponse> => {
+  try {
+    return await postBulkMultipart('/users/operational/bulk', file, omitRows);
   } catch (error) {
     throw new Error(
       getAxiosErrorMessage(
@@ -311,19 +371,11 @@ export const uploadBulkUsers = async (file: File): Promise<BulkUploadApiResponse
 
 /** Carga masiva administrativa (cola AD / SMB). Plantilla: Cedula, Ciudad (nombre en AD), Centro de costos, etc. */
 export const uploadAdministrativeBulkUsers = async (
-  file: File
+  file: File,
+  omitRows: number[] = []
 ): Promise<BulkUploadApiResponse> => {
-  const formData = new FormData();
-  formData.append('file', file);
-
   try {
-    const response = await apiClient.post('/users/administrative/bulk', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-    });
-
-    return response.data;
+    return await postBulkMultipart('/users/administrative/bulk', file, omitRows);
   } catch (error) {
     throw new Error(
       getAxiosErrorMessage(

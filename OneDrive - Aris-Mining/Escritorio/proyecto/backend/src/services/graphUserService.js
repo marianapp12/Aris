@@ -1,3 +1,6 @@
+/**
+ * Creación de usuarios operativos en Microsoft 365 (Graph API).
+ */
 import { getGraphClient } from '../config/graphClient.js';
 import {
   pickFirstAvailableSamAndUpnForOperational,
@@ -5,6 +8,7 @@ import {
 } from './graphUpnCandidatePicker.js';
 import { registerOperationalM365AfterCreate } from './operationalQueueMirror.js';
 
+/** Dominio del UPN sin @. Usa AD_QUEUE_EMAIL_DOMAIN si no hay OPERATIONAL_UPN_DOMAIN. */
 const OPERATIONAL_UPN_DOMAIN =
   process.env.OPERATIONAL_UPN_DOMAIN?.trim() ||
   process.env.AD_QUEUE_EMAIL_DOMAIN?.trim() ||
@@ -23,7 +27,7 @@ function truncateForGraphField(value, maxLen) {
   return s.slice(0, maxLen).trimEnd();
 }
 
-/** Evita condición de carrera en carga masiva: solo una creación (pick UPN + POST) a la vez. */
+/** Serializa altas en Graph para que dos filas del Excel no reserven el mismo UPN a la vez. */
 let graphUserCreateChain = Promise.resolve();
 
 /**
@@ -155,6 +159,10 @@ async function createUserInMicrosoft365Serialized({
         samAccountName: localPart,
         userPrincipalName: primaryEmail,
         email: primaryEmail,
+        givenName: givenName.trim(),
+        surname1: surname1.trim(),
+        surname2: surname2?.trim() || '',
+        displayName,
       });
 
       return {

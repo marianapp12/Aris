@@ -1,23 +1,23 @@
 /**
- * Grupos comunes para todos los usuarios operativos (además del grupo por sede).
- * OPERATIONAL_COMMON_GROUP_IDS: Object IDs separados por coma (p. ej. tres UUID).
- * Los segmentos vacíos tras una coma cuentan como ranura sin configurar.
+ * Grupos M365 compartidos por todos los operativos (además de operarios/colaboradores por sede).
+ *
+ * .env:
+ * - OPERATIONAL_COMMON_GROUP_IDS — Object IDs separados por coma
+ * - OPERATIONAL_COMMON_GROUP_DISPLAY_NAMES — nombres para la UI (mismo orden, opcional)
  */
 
 import { sanitizeGroupObjectIdEnv } from '../utils/envObjectId.js';
 
 let warnedEmptyCommonGroups = false;
 
-/**
- * @returns {string[]} Partes tras split por coma (trim); vacío si no hay variable.
- */
+/** Lista de Object ID de grupos comunes (vacía si no hay variable en .env). */
 export function getOperationalCommonGroupSlots() {
   const raw = sanitizeGroupObjectIdEnv(process.env.OPERATIONAL_COMMON_GROUP_IDS);
   if (!raw) {
     if (!warnedEmptyCommonGroups) {
       warnedEmptyCommonGroups = true;
       console.warn(
-        '[OPERATIONAL_GROUPS] OPERATIONAL_COMMON_GROUP_IDS vacío: no se asignarán grupos comunes (defina hasta tres Object ID separados por coma).'
+        '[OPERATIONAL_GROUPS] OPERATIONAL_COMMON_GROUP_IDS vacío: no se asignarán grupos comunes.'
       );
     }
     return [];
@@ -25,13 +25,7 @@ export function getOperationalCommonGroupSlots() {
   return raw.split(',').map((s) => sanitizeGroupObjectIdEnv(s));
 }
 
-/**
- * Nombres para mostrar de grupos comunes (mismo orden y cantidad de ranuras que OPERATIONAL_COMMON_GROUP_IDS).
- * Separados por coma; si un segmento está vacío se ignora como etiqueta en esa posición.
- * Útil cuando Graph no devuelve displayName (p. ej. sin Group.Read.All).
- *
- * @returns {string[]}
- */
+/** Etiquetas para mostrar en el front si Graph no devuelve displayName. */
 export function getOperationalCommonGroupDisplayNameSlots() {
   const raw = process.env.OPERATIONAL_COMMON_GROUP_DISPLAY_NAMES?.trim();
   if (!raw) return [];

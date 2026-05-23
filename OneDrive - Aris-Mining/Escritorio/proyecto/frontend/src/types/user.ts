@@ -21,11 +21,12 @@ export interface OperationalGroupGraphError {
   message?: string;
 }
 
-/** Resultado por grupo (sede + comunes) tras crear operativo en Graph. */
+/** Un grupo M365 al que se intentó agregar el usuario operativo. */
 export interface OperationalGroupMembershipResult {
-  kind: 'sede' | 'common';
+  kind: 'sede' | 'sede-operarios' | 'sede-colaboradores' | 'common';
+  sede?: string;
+  groupRole?: 'operarios' | 'colaboradores';
   groupObjectId?: string;
-  /** Nombre del grupo en Entra ID (GET /groups/{id}); opcional si Graph no permite leerlo. */
   groupDisplayName?: string;
   memberAdded: boolean;
   graphError?: OperationalGroupGraphError;
@@ -53,16 +54,58 @@ export interface NextUsernameResponse {
 export interface ExistingPersonDirectoryMatch {
   displayName: string;
   userPrincipalName?: string;
-  employeeId?: string;
   samAccountName?: string;
+  email?: string;
+  department?: string;
+  jobTitle?: string;
+  /** Sede (Graph `city` / AD `l`). */
+  sede?: string;
+  employeeId?: string;
+  postalCode?: string;
+}
+
+/** Duplicidad de cédula detectada en M365 y/o carpetas de cola AD. */
+export interface EmployeeIdDuplicateCheck {
+  microsoft365: ExistingPersonDirectoryMatch | null;
+  queuePending: ExistingPersonDirectoryMatch | null;
+  queueProcessed: ExistingPersonDirectoryMatch | null;
+}
+
+/** Fila del prechequeo masivo Excel antes de crear/encolar. */
+export interface BulkPrecheckRowResult {
+  row: number;
+  displayName: string;
+  exists: boolean;
+  check: CheckExistingPersonResponse | null;
+  skipPrecheck?: boolean;
+  message?: string;
+}
+
+/** POST .../bulk-precheck */
+export interface BulkPrecheckApiResponse {
+  message?: string;
+  totalRows: number;
+  duplicateCount: number;
+  rows: BulkPrecheckRowResult[];
 }
 
 /** POST /api/users/check-existing-person */
 export interface CheckExistingPersonResponse {
   exists: boolean;
   displayName: string;
+  /** Fuentes donde hubo coincidencia (p. ej. microsoft365, queuePending, employeeIdQueueProcessed). */
+  foundIn: string[];
   microsoft365: ExistingPersonDirectoryMatch | null;
   activeDirectory: ExistingPersonDirectoryMatch | null;
+  /** Solicitud en cola (pending/procesando) con el mismo nombre o cédula. */
+  queuePending: ExistingPersonDirectoryMatch | null;
+  /** Registro en procesados (usuario ya creado en AD por el script). */
+  queueProcessed: ExistingPersonDirectoryMatch | null;
+  /** Alta operativa M365 o resultado previo en cola (mismo nombre). */
+  queueHistorical?: ExistingPersonDirectoryMatch | null;
+  employeeIdDuplicate: EmployeeIdDuplicateCheck | null;
+  /** Avisos si Graph u otra fuente no pudo consultarse (exists puede ser false). */
+  verificationWarnings?: string[];
 }
 
 /** Respuesta 202 al encolar creación o actualización administrativa vía carpeta compartida (SMB). */

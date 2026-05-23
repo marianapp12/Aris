@@ -1,13 +1,4 @@
-/**
- * Ejecuta mapper(item, index) con como máximo `limit` tareas en vuelo.
- * El array de resultados conserva el mismo orden que `items`.
- *
- * @template T, R
- * @param {T[]} items
- * @param {number} limit
- * @param {(item: T, index: number) => Promise<R>} mapper
- * @returns {Promise<R[]>}
- */
+/** Pool con límite de concurrencia; resultados en el mismo orden que items. */
 export async function mapWithConcurrency(items, limit, mapper) {
   if (!items.length) return [];
   const n = Math.min(Math.max(1, Math.floor(limit)), items.length);

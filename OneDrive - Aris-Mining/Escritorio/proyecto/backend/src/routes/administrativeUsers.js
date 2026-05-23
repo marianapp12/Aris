@@ -7,9 +7,15 @@ import {
   getNextAdministrativeUsername,
   testAdQueueConnection,
 } from '../controllers/administrativeUsersController.js';
+import { precheckAdministrativeBulk } from '../controllers/bulkPrecheckController.js';
 
 const router = express.Router();
 const upload = multer();
+
+/**
+ * POST /api/users/administrative/bulk-precheck
+ */
+router.post('/administrative/bulk-precheck', upload.single('file'), precheckAdministrativeBulk);
 
 /**
  * POST /api/users/administrative/bulk

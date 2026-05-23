@@ -1,6 +1,5 @@
 /**
- * Cola SMB para creación de usuarios AD: el backend escribe JSON en una ruta UNC;
- * un script PowerShell en el servidor (Programador de tareas) procesa los archivos.
+ * Rutas y opciones de la cola administrativa (carpeta SMB + script Process-AdUserQueue.ps1).
  */
 
 import path from 'path';
@@ -27,15 +26,10 @@ export function getAdQueueConfig() {
   return {
     uncPath: unc,
     emailDomain,
-    /** No desactiva el prechequeo LDAP de cédula (AD_LDAP_*), si está configurado.
-     * Con AD_QUEUE_REQUIRE_GRAPH_FOR_ADMIN=true el encolado fallará si también está skip activo. */
     skipGraphPrecheck: skip === 'true' || skip === '1',
     requireGraphForAdmin: requireGraph === 'true' || requireGraph === '1',
-    /** Contenedor LDAP bajo el cual cuelgan las OU por sede (ver administrativeCitySite.js y AD_QUEUE_OU_LEAF_PREFIX). */
     ouDn: process.env.AD_QUEUE_OU_DN?.trim() || undefined,
-    /** Empresa (atributo Company en AD); va en el JSON como `empresa`. */
     company: process.env.AD_QUEUE_COMPANY?.trim() || undefined,
-    /** Solo metadatos para el script del servidor; no usar contraseña en claro salvo política explícita. */
     initialPasswordHint: process.env.AD_QUEUE_INITIAL_PASSWORD?.trim() || undefined,
     schemaVersion: Number.isFinite(schemaVersion) && schemaVersion > 0 ? schemaVersion : 1,
   };
@@ -124,8 +118,8 @@ export function getAdminGraphPrecheckRetryOptions() {
   const delayMs = Number(process.env.AD_QUEUE_GRAPH_PRECHECK_RETRY_DELAY_MS);
   return {
     retry: true,
-    retryAttempts: Number.isFinite(attempts) && attempts > 0 ? Math.floor(attempts) : 8,
-    retryDelayMs: Number.isFinite(delayMs) && delayMs > 0 ? Math.floor(delayMs) : 2000,
+    retryAttempts: Number.isFinite(attempts) && attempts > 0 ? Math.floor(attempts) : 4,
+    retryDelayMs: Number.isFinite(delayMs) && delayMs > 0 ? Math.floor(delayMs) : 600,
   };
 }
 

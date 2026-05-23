@@ -78,13 +78,11 @@ async function isAccountTakenInGraphOnce(graphClient, userPrincipalName, mailNic
   const sam = String(mailNickname || '').trim();
   if (!sam) return false;
 
-  if (await isMailNicknameTakenInGraph(graphClient, sam)) {
-    return true;
-  }
-
-  if (await isUpnPrefixTakenInGraph(graphClient, sam)) {
-    return true;
-  }
+  const [nickTaken, prefixTaken] = await Promise.all([
+    isMailNicknameTakenInGraph(graphClient, sam),
+    isUpnPrefixTakenInGraph(graphClient, sam),
+  ]);
+  if (nickTaken || prefixTaken) return true;
 
   const upnsToCheck = new Set();
   const primary = String(userPrincipalName || '').trim();
@@ -94,16 +92,16 @@ async function isAccountTakenInGraphOnce(graphClient, userPrincipalName, mailNic
     upnsToCheck.add(`${sam}@${domain}`);
   }
 
-  for (const upn of upnsToCheck) {
-    if (await isUpnTakenInGraph(graphClient, upn)) {
-      return true;
-    }
-    if (await isPrimaryMailTakenInGraph(graphClient, upn)) {
-      return true;
-    }
-  }
-
-  return false;
+  const upnChecks = await Promise.all(
+    [...upnsToCheck].map(async (upn) => {
+      const [upnTaken, mailTaken] = await Promise.all([
+        isUpnTakenInGraph(graphClient, upn),
+        isPrimaryMailTakenInGraph(graphClient, upn),
+      ]);
+      return upnTaken || mailTaken;
+    })
+  );
+  return upnChecks.some(Boolean);
 }
 
 /**

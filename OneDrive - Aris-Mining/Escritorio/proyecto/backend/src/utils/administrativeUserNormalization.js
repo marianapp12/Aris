@@ -1,6 +1,4 @@
-/**
- * Misma normalización que carga masiva operativa/administrativa: Title Case en nombres, MAYÚSCULAS en puesto/depto.
- */
+/** Title Case en nombres; puesto/depto en MAYÚSCULAS (igual que bulk Excel). */
 
 import { normalizeAdministrativePostalCode } from './administrativeUserValidation.js';
 import { normalizeAdministrativeCityDisplayForAd } from './administrativeCitySite.js';
@@ -17,10 +15,6 @@ export function toTitleCaseWords(value) {
     .join(' ');
 }
 
-/**
- * @param {object} body - validateAdministrativePayload (campos ya validados)
- * @returns {object} body listo para encolar
- */
 export function normalizeAdministrativeBody(body) {
   const givenTrim = String(body.givenName || '').trim();
   const parts = givenTrim.split(WHITESPACE_SPLIT).filter(Boolean);

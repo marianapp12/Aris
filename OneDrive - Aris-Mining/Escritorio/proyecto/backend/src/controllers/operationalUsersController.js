@@ -1,10 +1,10 @@
 import { createUserInMicrosoft365, getNextAvailableUsername } from '../services/graphUserService.js';
 import { addUserToGroup, getGroupDisplayName } from '../services/graphGroupMemberService.js';
+import { isValidOperationalSede, OPERATIONAL_SEDE_VALUES } from '../config/operationalSede.js';
 import {
-  isValidOperationalSede,
-  getGroupObjectIdForSede,
-  OPERATIONAL_SEDE_VALUES,
-} from '../config/operationalSede.js';
+  formatOperationalGroupName,
+  getGroupObjectIdForSedeRole,
+} from '../config/operationalSedeGroups.js';
 import {
   getOperationalCommonGroupSlots,
   getOperationalCommonGroupDisplayNameSlots,
@@ -12,13 +12,12 @@ import {
 import { logGraphApiError } from '../utils/graphApiErrors.js';
 import { parseOperationalBulkSheet } from '../utils/excelOperationalBulkParse.js';
 import { mapWithConcurrency } from '../utils/asyncPool.js';
+import { parseOmitRowsSet } from '../utils/parseOmitRows.js';
 import XLSX from 'xlsx';
 
 const OPERATIONAL_SEDE_LIST = OPERATIONAL_SEDE_VALUES.join(', ');
 
-/** Controladoe de node.js creacion de usuarios en microsoft 365 */
-
-/** Convierte a formato "Primera Letra Mayúscula" por palabra */
+/** Pasa cada palabra a formato título (Primera Letra Mayúscula). */
 const toTitleCase = (value) =>
   value
     .toLowerCase()
@@ -27,11 +26,11 @@ const toTitleCase = (value) =>
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(' ');
 
-/** Solo letras (incluye acentos, ñ, ü, espacios, guiones) para nombres y apellidos */
+/** Nombres y apellidos: solo letras (con tildes y ñ), espacios y guiones. */
 const onlyLettersRegex = /[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s-]/;
 const hasInvalidCharsForName = (value) => value && onlyLettersRegex.test(value);
 
-/** Puesto y departamento: mismas reglas que nombres (solo letras, espacios, guiones). */
+/** Puesto y departamento: mismas reglas que nombres. */
 const hasInvalidCharsForJobOrDept = (value) => Boolean(value && onlyLettersRegex.test(value));
 
 const OPERATIONAL_POSTAL_MIN = 4;
@@ -50,45 +49,72 @@ function isValidOperationalPostalCodeDigits(normalized) {
 }
 
 /**
- * Grupo por sede primero, luego ranuras comunes desde OPERATIONAL_COMMON_GROUP_IDS.
- * Dedupe de Object ID: no repite POST a Graph; el usuario ya quedó miembro en la primera asignación.
- *
- * @param {string} sedeNorm
- * @param {string} userObjectId
- * @returns {Promise<{ kind: 'sede' | 'common'; groupObjectId?: string; groupDisplayName?: string; memberAdded: boolean; graphError?: { httpStatus?: number; code?: string; message?: string } }[]>}
+ * Completa cada membresía con el nombre del grupo (Graph o etiqueta esperada operarios.medellin).
  */
 async function enrichGroupMembershipsWithDisplayNames(memberships) {
   const commonLabels = getOperationalCommonGroupDisplayNameSlots();
-  const out = [];
-  for (const m of memberships) {
-    const { commonSlotIndex, ...rest } = m;
-    if (!m.groupObjectId) {
-      out.push(rest);
-      continue;
-    }
-    let groupDisplayName = await getGroupDisplayName(m.groupObjectId);
-    if (
-      !groupDisplayName &&
-      m.kind === 'common' &&
-      typeof commonSlotIndex === 'number' &&
-      commonLabels[commonSlotIndex]
-    ) {
-      groupDisplayName = commonLabels[commonSlotIndex];
-    }
-    out.push({
-      ...rest,
-      ...(groupDisplayName ? { groupDisplayName } : {}),
-    });
-  }
-  return out;
+
+  return Promise.all(
+    memberships.map(async (m) => {
+      const { commonSlotIndex, sede, groupRole, ...rest } = m;
+      if (!m.groupObjectId) {
+        return { ...rest, ...(sede ? { sede } : {}), ...(groupRole ? { groupRole } : {}) };
+      }
+
+      let groupDisplayName =
+        m.kind === 'common' &&
+        typeof commonSlotIndex === 'number' &&
+        commonLabels[commonSlotIndex]
+          ? commonLabels[commonSlotIndex]
+          : undefined;
+
+      if (
+        !groupDisplayName &&
+        sede &&
+        groupRole &&
+        (m.kind === 'sede-operarios' || m.kind === 'sede-colaboradores' || m.kind === 'sede')
+      ) {
+        groupDisplayName = formatOperationalGroupName(groupRole, sede);
+      }
+
+      if (!groupDisplayName) {
+        groupDisplayName = await getGroupDisplayName(m.groupObjectId);
+      }
+
+      return {
+        ...rest,
+        ...(sede ? { sede } : {}),
+        ...(groupRole ? { groupRole } : {}),
+        ...(groupDisplayName ? { groupDisplayName } : {}),
+      };
+    })
+  );
 }
 
+/**
+ * Agrega el usuario recién creado a grupos M365: operarios + colaboradores de la sede y grupos comunes.
+ * Si falta un Object ID en .env, esa fila queda memberAdded: false pero el usuario ya existe en Graph.
+ */
 async function applyOperationalGroupMemberships(sedeNorm, userObjectId) {
-  const sedeId = getGroupObjectIdForSede(sedeNorm);
+  const operariosId = getGroupObjectIdForSedeRole('operarios', sedeNorm);
+  const colaboradoresId = getGroupObjectIdForSedeRole('colaboradores', sedeNorm);
   const commonSlots = getOperationalCommonGroupSlots();
 
-  /** @type {{ id: string | null; kind: 'sede' | 'common'; commonSlotIndex?: number }[]} */
-  const slots = [{ id: sedeId, kind: 'sede' }];
+  /** @type {{ id: string | null; kind: string; sede?: string; groupRole?: string; commonSlotIndex?: number }[]} */
+  const slots = [
+    {
+      id: operariosId,
+      kind: 'sede-operarios',
+      sede: sedeNorm,
+      groupRole: 'operarios',
+    },
+    {
+      id: colaboradoresId,
+      kind: 'sede-colaboradores',
+      sede: sedeNorm,
+      groupRole: 'colaboradores',
+    },
+  ];
   let commonIdx = 0;
   for (const part of commonSlots) {
     slots.push({
@@ -100,17 +126,23 @@ async function applyOperationalGroupMemberships(sedeNorm, userObjectId) {
   }
 
   const seen = new Set();
-  /** @type {{ kind: 'sede' | 'common'; commonSlotIndex?: number; groupObjectId?: string; memberAdded: boolean; graphError?: { httpStatus?: number; code?: string; message?: string } }[]} */
+  /** @type {{ kind: string; sede?: string; groupRole?: string; commonSlotIndex?: number; groupObjectId?: string; memberAdded: boolean; graphError?: { httpStatus?: number; code?: string; message?: string } }[]} */
   const memberships = [];
+  /** @type {Promise<void>[]} */
+  const addTasks = [];
 
   for (const slot of slots) {
     const commonMeta =
       slot.kind === 'common' && slot.commonSlotIndex !== undefined
         ? { commonSlotIndex: slot.commonSlotIndex }
         : {};
+    const sedeMeta =
+      slot.sede && slot.groupRole
+        ? { sede: slot.sede, groupRole: slot.groupRole }
+        : {};
 
     if (!slot.id) {
-      memberships.push({ kind: slot.kind, memberAdded: false, ...commonMeta });
+      memberships.push({ kind: slot.kind, memberAdded: false, ...commonMeta, ...sedeMeta });
       continue;
     }
     const key = slot.id.toLowerCase();
@@ -120,19 +152,32 @@ async function applyOperationalGroupMemberships(sedeNorm, userObjectId) {
         groupObjectId: slot.id,
         memberAdded: true,
         ...commonMeta,
+        ...sedeMeta,
       });
       continue;
     }
     seen.add(key);
-    const addResult = await addUserToGroup(slot.id, userObjectId);
+    const membershipIndex = memberships.length;
     memberships.push({
       kind: slot.kind,
       groupObjectId: slot.id,
-      memberAdded: addResult.ok,
-      ...(addResult.graphError ? { graphError: addResult.graphError } : {}),
+      memberAdded: false,
       ...commonMeta,
+      ...sedeMeta,
     });
+    addTasks.push(
+      (async () => {
+        const addResult = await addUserToGroup(slot.id, userObjectId);
+        memberships[membershipIndex] = {
+          ...memberships[membershipIndex],
+          memberAdded: addResult.ok,
+          ...(addResult.graphError ? { graphError: addResult.graphError } : {}),
+        };
+      })()
+    );
   }
+
+  await Promise.all(addTasks);
 
   return enrichGroupMembershipsWithDisplayNames(memberships);
 }
@@ -144,10 +189,8 @@ function getOperationalBulkConcurrency() {
 }
 
 /**
- * Una fila de la carga masiva Excel: validación + creación Graph + grupos.
- * @param {Record<string, unknown>} row
- * @param {number} rowNumber - fila en Excel (mensajes / resultado)
- * @param {Set<string>} bulkReservedUpnLower - UPN en minúsculas ya reservados en este mismo request bulk
+ * Procesa una fila del Excel operativo: valida, crea en M365 y asigna grupos.
+ * @param {Set<string>} bulkReservedUpnLower — UPN ya usados en este mismo archivo (evita duplicados).
  */
 async function processOperationalBulkRow(row, rowNumber, bulkReservedUpnLower) {
   const primerNombre = (row.PrimerNombre || '').toString().trim();
@@ -272,7 +315,9 @@ async function processOperationalBulkRow(row, rowNumber, bulkReservedUpnLower) {
     });
 
     const groupMemberships = await applyOperationalGroupMemberships(sedeNorm, created.id);
-    const sedeMembership = groupMemberships.find((m) => m.kind === 'sede');
+    const sedeMembership = groupMemberships.find(
+      (m) => m.kind === 'sede-operarios' || m.kind === 'sede'
+    );
     const groupId = sedeMembership?.groupObjectId;
     const groupMemberAdded = Boolean(
       sedeMembership?.groupObjectId && sedeMembership.memberAdded
@@ -299,12 +344,9 @@ async function processOperationalBulkRow(row, rowNumber, bulkReservedUpnLower) {
   }
 }
 
-/**
- * Controlador para crear un usuario operativo
- */
+/** POST /api/users/operational — crea usuario en M365 y lo agrega a los grupos de la sede. */
 export const createOperationalUser = async (req, res, next) => {
   try {
-    /** Centro de costos (UI): solo `postalCode` en el body (JSON del front). */
     const { givenName, surname1, surname2, jobTitle, department, sede, postalCode } = req.body;
 
     const postalNorm = normalizeOperationalPostalCode(postalCode ?? '');
@@ -408,7 +450,9 @@ export const createOperationalUser = async (req, res, next) => {
     });
 
     const groupMemberships = await applyOperationalGroupMemberships(sedeNorm, result.id);
-    const sedeMembership = groupMemberships.find((m) => m.kind === 'sede');
+    const sedeMembership = groupMemberships.find(
+      (m) => m.kind === 'sede-operarios' || m.kind === 'sede'
+    );
     const groupId = sedeMembership?.groupObjectId;
     const groupMemberAdded = Boolean(
       sedeMembership?.groupObjectId && sedeMembership.memberAdded
@@ -566,15 +610,25 @@ export const createOperationalUsersBulk = async (req, res) => {
       });
     }
 
+    const omitRows = parseOmitRowsSet(req.body?.omitRows);
+
     const rowJobs = rows.map((row, index) => ({
       row,
       rowNumber: index + firstDataExcelRow,
     }));
     const bulkReservedUpnLower = new Set();
     const limit = getOperationalBulkConcurrency();
-    const results = await mapWithConcurrency(rowJobs, limit, ({ row, rowNumber }) =>
-      processOperationalBulkRow(row, rowNumber, bulkReservedUpnLower)
-    );
+    const results = await mapWithConcurrency(rowJobs, limit, ({ row, rowNumber }) => {
+      if (omitRows.has(rowNumber)) {
+        return {
+          row: rowNumber,
+          status: 'skipped',
+          message:
+            'Fila omitida: no se creó el usuario (duplicado detectado en el prechequeo; eligió omitir).',
+        };
+      }
+      return processOperationalBulkRow(row, rowNumber, bulkReservedUpnLower);
+    });
 
     res.status(201).json({
       message: 'Procesamiento masivo completado.',

@@ -12,22 +12,36 @@ import {
   createOperationalUser,
   createUserViaAdQueue,
   getAdministrativeQueueRequestResult,
+  precheckBulkAdministrativeUsers,
+  precheckBulkOperationalUsers,
   testAdministrativeQueueConnection,
   uploadBulkUsers,
   uploadAdministrativeBulkUsers,
 } from '../services/apiClient';
-import type { CheckExistingPersonResponse } from '../types/user';
+import type {
+  CheckExistingPersonResponse,
+  ExistingPersonDirectoryMatch,
+} from '../types/user';
 import {
   ADMINISTRATIVE_CITY_SELECT_OPTIONS,
   isAdministrativeCityFormValue,
 } from '../constants/administrativeCities';
+import {
+  createButtonLabel,
+  createStatusHint,
+  DUPLICATE_CHECK_UI,
+  duplicateModalConfirmFootnote,
+  shouldOpenDuplicateModal,
+} from '../constants/duplicateCheckMessages';
+import {
+  parseCreateErrorForModal,
+  type CreateErrorModalContent,
+} from '../utils/createErrorModalContent';
 import './CreateUserForm.css';
 
 /**
- * Formulario de creación de usuarios:
- * - Operativo: envío al backend → Microsoft Graph (cuenta M365).
- * - Administrativo: prueba SMB (opcional) → encolado JSON → script PowerShell en el servidor (AD).
- * Incluye validación en cliente, filtrado de entrada, carga masiva Excel y polling del resultado AD.
+ * Alta de usuarios operativos (Microsoft 365) y administrativos (cola AD / SMB).
+ * Incluye validación, prechequeo de duplicados, carga masiva Excel y seguimiento del script en el servidor.
  */
 
 /** URL absoluta a la plantilla (SharePoint, etc.). Sin fallback en `public/`. */
@@ -176,6 +190,85 @@ const toTitleCase = (value: string): string =>
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(' ');
 
+const PERSON_MATCH_DETAIL_ROWS: {
+  key: keyof ExistingPersonDirectoryMatch;
+  label: string;
+}[] = [
+  { key: 'email', label: 'Correo' },
+  { key: 'department', label: 'Departamento' },
+  { key: 'jobTitle', label: 'Puesto' },
+  { key: 'sede', label: 'Sede' },
+  { key: 'employeeId', label: 'Cédula / ID empleado' },
+  { key: 'postalCode', label: 'Centro de costos' },
+];
+
+const FOUND_IN_LABELS: Record<string, string> = {
+  microsoft365: 'Microsoft 365',
+  activeDirectory: 'Active Directory (LDAP)',
+  queuePending: 'Cola del servidor (pendiente de procesar en AD)',
+  queueProcessed: 'Active Directory (ya procesado — carpeta procesados)',
+  queueHistorical: 'Registro previo (cola / alta operativa M365)',
+  employeeIdMicrosoft365: 'Cédula en Microsoft 365',
+  employeeIdQueuePending: 'Cédula en cola (pendiente)',
+  employeeIdQueueProcessed: 'Cédula ya procesada en AD',
+};
+
+function formatDuplicateFoundInSummary(foundIn: string[]): string {
+  const labels = foundIn
+    .map((key) => FOUND_IN_LABELS[key] || key)
+    .filter(Boolean);
+  if (labels.length === 0) return '';
+  if (labels.length === 1) return labels[0];
+  return labels.join(' · ');
+}
+
+function PersonMatchDetailsBlock({
+  sourceLabel,
+  match,
+}: {
+  sourceLabel: string;
+  match: ExistingPersonDirectoryMatch;
+}) {
+  const accountHint =
+    match.samAccountName ||
+    match.userPrincipalName ||
+    match.email ||
+    match.displayName;
+
+  const detailRows = PERSON_MATCH_DETAIL_ROWS.filter((row) => {
+    const v = match[row.key];
+    return typeof v === 'string' && v.trim().length > 0;
+  });
+
+  return (
+    <div className="duplicate-match-block">
+      <p className="duplicate-match-source">
+        <strong>{sourceLabel}</strong>
+        {accountHint ? (
+          <>
+            {' '}
+            — <span className="duplicate-match-account">{accountHint}</span>
+          </>
+        ) : null}
+      </p>
+      {detailRows.length > 0 ? (
+        <dl className="duplicate-match-detail">
+          {detailRows.map((row) => (
+            <div key={row.key} className="duplicate-match-detail-row">
+              <dt>{row.label}</dt>
+              <dd>{match[row.key]}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <p className="duplicate-match-empty-note">
+          Sin datos adicionales de perfil en esta fuente.
+        </p>
+      )}
+    </div>
+  );
+}
+
 type CreatedUser = {
   displayName: string;
   userName: string;
@@ -241,25 +334,69 @@ function formatGraphErrorSuffix(g: OperationalGroupMembershipResult['graphError'
   return bits.join(' · ');
 }
 
-/**
- * Etiqueta legible para “grupo por sede” cuando el backend no envía `groupMemberships` (respuesta antigua).
- */
+function sedeToGroupSlug(sede: string | undefined): string {
+  return (sede ?? '')
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, '');
+}
+
+function expectedOperariosGroupLabel(sede: string | undefined): string {
+  const slug = sedeToGroupSlug(sede);
+  return slug ? `operarios.${slug}` : 'operarios';
+}
+
+function expectedSedeGroupLabel(
+  role: 'operarios' | 'colaboradores' | undefined,
+  sede: string | undefined
+): string {
+  const slug = sedeToGroupSlug(sede);
+  if (!slug) return role === 'colaboradores' ? 'colaboradores' : 'operarios';
+  return `${role === 'colaboradores' ? 'colaboradores' : 'operarios'}.${slug}`;
+}
+
+/** true si el nombre del grupo en Entra incluye la sede (p. ej. bucaramanga en OPERARIOS BUCARAMANGA). */
+function graphDisplayNameMatchesSede(
+  graphDisplayName: string,
+  sede: string | undefined
+): boolean {
+  const slug = sedeToGroupSlug(sede);
+  if (!slug) return true;
+  const normalized = graphDisplayName
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[\s._-]+/g, '');
+  return normalized.includes(slug);
+}
+
 function operationalGroupAssignmentLabel(
   sede: string | undefined,
   groupObjectId: string | undefined,
   groupMemberAdded: boolean | undefined
 ): string {
-  const place = sede?.trim() || '—';
+  const groupName = expectedOperariosGroupLabel(sede);
   if (!groupObjectId) {
-    return `${place} — no se configuró GROUP_* en el servidor`;
+    return `${groupName} — no se configuró GROUP_OPERARIOS_* en el servidor`;
   }
   if (groupMemberAdded) {
-    return `${place} — miembro agregado`;
+    return `${groupName} — miembro agregado`;
   }
-  return `${place} — no se pudo agregar (revise logs del backend)`;
+  return `${groupName} — no se pudo agregar (revise logs del backend)`;
 }
 
-/** Una fila de resultado: grupo sede o común, si se agregó el miembro y mensaje de error Graph si hubo fallo. */
+function isSedeOperationalMembership(m: OperationalGroupMembershipResult): boolean {
+  return (
+    m.kind === 'sede' ||
+    m.kind === 'sede-operarios' ||
+    m.kind === 'sede-colaboradores'
+  );
+}
+
+/** Tarjeta de un grupo M365 en la pantalla de éxito (sede o común). */
 function OperationalGroupMembershipCard({
   m,
   sedeName,
@@ -267,35 +404,37 @@ function OperationalGroupMembershipCard({
   m: OperationalGroupMembershipResult;
   sedeName: string | undefined;
 }) {
-  const place = sedeName?.trim() || '—';
+  const place = sedeName?.trim() || m.sede?.trim() || '—';
   const groupName = m.groupDisplayName?.trim();
-  const nameMatchesSede =
-    m.kind === 'sede' &&
-    groupName &&
-    place !== '—' &&
-    groupName.localeCompare(place, undefined, { sensitivity: 'accent' }) === 0;
+  const role = m.groupRole === 'colaboradores' ? 'colaboradores' : 'operarios';
+  const expectedName = expectedSedeGroupLabel(
+    m.groupRole === 'colaboradores' ? 'colaboradores' : 'operarios',
+    place !== '—' ? place : undefined
+  );
 
   let primaryTitle = '';
   let subtitle = '';
+  let mismatchNote = '';
   let errorText = '';
 
-  if (m.kind === 'sede') {
-    subtitle = 'Grupo según sede';
+  if (isSedeOperationalMembership(m)) {
+    const roleLabel =
+      m.groupRole === 'colaboradores' ? 'Colaboradores' : 'Operarios';
+    primaryTitle = expectedName;
+    subtitle = `${roleLabel} · sede ${place}`;
     if (!m.groupObjectId) {
-      primaryTitle = place !== '—' ? `Sede ${place}` : 'Sede';
-      errorText = 'No hay GROUP_* configurado en el servidor para esta sede.';
-    } else if (nameMatchesSede) {
-      primaryTitle = place;
-      subtitle = 'Grupo de la sede (Microsoft 365)';
-    } else if (groupName) {
-      primaryTitle = groupName;
-      subtitle = `Sede: ${place}`;
-    } else {
-      primaryTitle = `Sede ${place}`;
+      errorText = `No hay GROUP_${m.groupRole === 'colaboradores' ? 'COLABORADORES' : 'OPERARIOS'}_* configurado para ${place}.`;
+    } else if (
+      groupName &&
+      place !== '—' &&
+      !graphDisplayNameMatchesSede(groupName, place)
+    ) {
+      const envSede = sedeToGroupSlug(place).toUpperCase();
+      mismatchNote = `En Microsoft 365 el grupo se llama «${groupName}». Revise GROUP_${role === 'colaboradores' ? 'COLABORADORES' : 'OPERARIOS'}_${envSede}_ID en el .env del servidor: debe ser el Object ID del grupo ${expectedName}.`;
     }
     if (m.groupObjectId && !m.memberAdded) {
       errorText =
-        (groupName && !nameMatchesSede ? `${groupName}: ` : '') +
+        (groupName ? `${groupName}: ` : '') +
         'No se pudo agregar al grupo' +
         (formatGraphErrorSuffix(m.graphError)
           ? ` (${formatGraphErrorSuffix(m.graphError)})`
@@ -328,6 +467,9 @@ function OperationalGroupMembershipCard({
       <div className="operational-group-card__main">
         <div className="operational-group-card__title">{primaryTitle}</div>
         <div className="operational-group-card__subtitle">{subtitle}</div>
+        {mismatchNote ? (
+          <div className="operational-group-card__mismatch">{mismatchNote}</div>
+        ) : null}
         {errorText ? (
           <div className="operational-group-card__error">{errorText}</div>
         ) : null}
@@ -360,7 +502,7 @@ function OperationalGroupAssignmentsBlock({
 }) {
   const hasStructured = memberships && memberships.length > 0;
   const sedeItems = hasStructured
-    ? memberships!.filter((x) => x.kind === 'sede')
+    ? memberships!.filter((x) => isSedeOperationalMembership(x))
     : [];
   const commonItems = hasStructured
     ? memberships!.filter((x) => x.kind === 'common')
@@ -374,7 +516,9 @@ function OperationalGroupAssignmentsBlock({
           <div className="operational-groups-panel">
             {sedeItems.length > 0 ? (
               <div className="operational-groups-section">
-                <div className="operational-groups-section__title">Por sede</div>
+                <div className="operational-groups-section__title">
+                  Por sede (operarios / colaboradores)
+                </div>
                 <div className="operational-groups-section__cards">
                   {sedeItems.map((m, i) => (
                     <OperationalGroupMembershipCard
@@ -437,6 +581,15 @@ const AD_RESULT_POLL_WINDOW_MINUTES = Math.max(
 const BULK_AD_POLL_CONCURRENCY = 5;
 
 /** Fila devuelta por POST .../bulk (operativo o administrativo). */
+type BulkExcelKind = 'operational' | 'administrative';
+
+type BulkDuplicateRowUi = {
+  rowNumber: number;
+  displayName: string;
+  check: CheckExistingPersonResponse;
+  action: 'omit' | 'create';
+};
+
 type BulkRowResult = {
   row: number;
   status: string;
@@ -454,6 +607,19 @@ type BulkRowResult = {
   adOrganizationalUnitDn?: string;
 };
 
+const EMPTY_USER_FORM_DATA: UserFormData = {
+  primerNombre: '',
+  segundoNombre: '',
+  apellido1: '',
+  apellido2: '',
+  puesto: '',
+  departamento: '',
+  sede: '',
+  postalCode: '',
+  cedula: '',
+  ciudad: '',
+};
+
 /**
  * Componente raíz del formulario: tipo de alta, campos, errores, masivos Excel y seguimiento de cola/resultado AD.
  */
@@ -461,18 +627,7 @@ const CreateUserForm = () => {
   const [userCreationType, setUserCreationType] =
     useState<UserCreationType>('operational');
 
-  const [formData, setFormData] = useState<UserFormData>({
-    primerNombre: '',
-    segundoNombre: '',
-    apellido1: '',
-    apellido2: '',
-    puesto: '',
-    departamento: '',
-    sede: '',
-    postalCode: '',
-    cedula: '',
-    ciudad: '',
-  });
+  const [formData, setFormData] = useState<UserFormData>(EMPTY_USER_FORM_DATA);
 
   const [createdUser, setCreatedUser] = useState<CreatedUser | null>(null);
 
@@ -495,9 +650,17 @@ const CreateUserForm = () => {
     employeeId?: string;
     city?: string;
   } | null>(null);
+  /** Evita doble envío mientras corre prechequeo o creación (clics rápidos antes de deshabilitar el botón). */
+  const submitInFlightRef = useRef(false);
   const [isCheckingDuplicate, setIsCheckingDuplicate] = useState(false);
+  const [duplicateVerificationWarnings, setDuplicateVerificationWarnings] = useState<string[]>(
+    []
+  );
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState<string>('');
+  const [createErrorModal, setCreateErrorModal] = useState<CreateErrorModalContent | null>(
+    null
+  );
   const [bulkFile, setBulkFile] = useState<File | null>(null);
   const [bulkStatus, setBulkStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
   const [bulkMessage, setBulkMessage] = useState<string>('');
@@ -509,6 +672,12 @@ const CreateUserForm = () => {
   const [bulkAdminResults, setBulkAdminResults] = useState<
     AdministrativeBulkRowResult[] | null
   >(null);
+
+  const [bulkDuplicateModalOpen, setBulkDuplicateModalOpen] = useState(false);
+  const [bulkDuplicateRows, setBulkDuplicateRows] = useState<BulkDuplicateRowUi[]>([]);
+  const [bulkPendingFile, setBulkPendingFile] = useState<File | null>(null);
+  const [bulkPendingKind, setBulkPendingKind] = useState<BulkExcelKind>('operational');
+  const [bulkPrecheckLoading, setBulkPrecheckLoading] = useState(false);
 
   const [queueConnStatus, setQueueConnStatus] = useState<'idle' | 'loading' | 'success' | 'error'>(
     'idle'
@@ -943,43 +1112,176 @@ const CreateUserForm = () => {
     setBulkStatus('idle');
   };
 
-  /** POST masivo operativos: Excel → API; guarda `bulkResults` con estado por fila. */
+  const applyOperationalBulkResult = (resultsArray: BulkRowResult[]) => {
+    const successCount = resultsArray.filter((r) => r.status === 'success').length;
+    const errorCount = resultsArray.filter((r) => r.status === 'error').length;
+    const skippedCount = resultsArray.filter((r) => r.status === 'skipped').length;
+
+    setBulkStatus('done');
+    setBulkMessage(
+      successCount === 0 && errorCount > 0 && skippedCount === 0
+        ? `Ningún usuario creado (${errorCount} fila(s) con error). Abajo verá el motivo por fila.`
+        : [
+            successCount > 0 ? `${successCount} creado(s) en Microsoft 365` : null,
+            errorCount > 0 ? `${errorCount} con error` : null,
+            skippedCount > 0 ? `${skippedCount} omitida(s) (duplicado)` : null,
+          ]
+            .filter(Boolean)
+            .join(' · ') || 'Procesamiento masivo completado.'
+    );
+    setBulkResults(resultsArray);
+  };
+
+  const applyAdministrativeBulkResult = (resultsArray: BulkRowResult[]) => {
+    const successCount = resultsArray.filter((r) => r.status === 'success').length;
+    const errorCount = resultsArray.filter((r) => r.status === 'error').length;
+    const skippedCount = resultsArray.filter((r) => r.status === 'skipped').length;
+
+    setBulkAdminStatus('done');
+    setBulkAdminMessage(
+      successCount === 0 && errorCount > 0 && skippedCount === 0
+        ? `Ninguna solicitud encolada (${errorCount} fila(s) rechazada(s)). Abajo verá el motivo por fila.`
+        : [
+            successCount > 0 ? `${successCount} encolada(s)` : null,
+            errorCount > 0 ? `${errorCount} con error` : null,
+            skippedCount > 0 ? `${skippedCount} omitida(s) (duplicado)` : null,
+          ]
+            .filter(Boolean)
+            .join(' · ') || 'Procesamiento masivo completado.'
+    );
+    setBulkAdminResults(resultsArray as AdministrativeBulkRowResult[]);
+  };
+
+  const executeBulkUpload = async (kind: BulkExcelKind, file: File, omitRows: number[]) => {
+    if (kind === 'operational') {
+      setBulkStatus('loading');
+      setBulkMessage('');
+      setBulkResults(null);
+      const result = await uploadBulkUsers(file, omitRows);
+      const resultsArray = (
+        Array.isArray(result.results) ? result.results : []
+      ) as BulkRowResult[];
+      applyOperationalBulkResult(resultsArray);
+    } else {
+      setBulkAdminStatus('loading');
+      setBulkAdminMessage('');
+      setBulkAdminResults(null);
+      const result = await uploadAdministrativeBulkUsers(file, omitRows);
+      const resultsArray = (
+        Array.isArray(result.results) ? result.results : []
+      ) as BulkRowResult[];
+      applyAdministrativeBulkResult(resultsArray);
+    }
+  };
+
+  const startBulkUploadWithPrecheck = async (kind: BulkExcelKind, file: File) => {
+    try {
+      setBulkPrecheckLoading(true);
+      if (kind === 'operational') {
+        setBulkStatus('loading');
+        setBulkMessage(DUPLICATE_CHECK_UI.verifyingBulk);
+      } else {
+        setBulkAdminStatus('loading');
+        setBulkAdminMessage(DUPLICATE_CHECK_UI.verifyingBulk);
+      }
+
+      const precheck =
+        kind === 'operational'
+          ? await precheckBulkOperationalUsers(file)
+          : await precheckBulkAdministrativeUsers(file);
+
+      const duplicates = (precheck.rows || []).filter(
+        (r) => r.check && shouldOpenDuplicateModal(r.check)
+      ) as Array<{
+        row: number;
+        displayName: string;
+        exists: boolean;
+        check: CheckExistingPersonResponse;
+      }>;
+
+      if (duplicates.length === 0) {
+        await executeBulkUpload(kind, file, []);
+        return;
+      }
+
+      setBulkPendingFile(file);
+      setBulkPendingKind(kind);
+      setBulkDuplicateRows(
+        duplicates.map((d) => ({
+          rowNumber: d.row,
+          displayName: d.displayName,
+          check: d.check,
+          action: 'omit',
+        }))
+      );
+      setBulkDuplicateModalOpen(true);
+      if (kind === 'operational') {
+        setBulkStatus('idle');
+        setBulkMessage('');
+      } else {
+        setBulkAdminStatus('idle');
+        setBulkAdminMessage('');
+      }
+    } catch (err) {
+      if (kind === 'operational') {
+        setBulkStatus('error');
+        setBulkMessage(
+          err instanceof Error ? err.message : 'Error al verificar el archivo de usuarios.'
+        );
+        setBulkResults(null);
+      } else {
+        setBulkAdminStatus('error');
+        setBulkAdminMessage(
+          err instanceof Error
+            ? err.message
+            : 'Error al verificar el archivo administrativo.'
+        );
+        setBulkAdminResults(null);
+      }
+    } finally {
+      setBulkPrecheckLoading(false);
+    }
+  };
+
+  const handleBulkDuplicateConfirm = async () => {
+    const file = bulkPendingFile;
+    if (!file) {
+      setBulkDuplicateModalOpen(false);
+      return;
+    }
+    const omitRows = bulkDuplicateRows
+      .filter((r) => r.action === 'omit')
+      .map((r) => r.rowNumber);
+    setBulkDuplicateModalOpen(false);
+    setBulkDuplicateRows([]);
+    setBulkPendingFile(null);
+    try {
+      await executeBulkUpload(bulkPendingKind, file, omitRows);
+    } catch (err) {
+      if (bulkPendingKind === 'operational') {
+        setBulkStatus('error');
+        setBulkMessage(
+          err instanceof Error ? err.message : 'Error al cargar el archivo de usuarios.'
+        );
+      } else {
+        setBulkAdminStatus('error');
+        setBulkAdminMessage(
+          err instanceof Error
+            ? err.message
+            : 'Error al cargar el archivo administrativo.'
+        );
+      }
+    }
+  };
+
+  /** POST masivo operativos: prechequeo → modal si hay duplicados → API. */
   const handleBulkUpload = async () => {
     if (!bulkFile) {
       setBulkMessage('Por favor selecciona un archivo de Excel.');
       setBulkStatus('error');
       return;
     }
-
-    try {
-      setBulkStatus('loading');
-      setBulkMessage('');
-      setBulkResults(null);
-
-      const result = await uploadBulkUsers(bulkFile);
-
-      const resultsArray = (
-        Array.isArray(result.results) ? result.results : []
-      ) as BulkRowResult[];
-      const successCount = resultsArray.filter((r) => r.status === 'success').length;
-      const errorCount = resultsArray.filter((r) => r.status === 'error').length;
-
-      setBulkStatus('done');
-      setBulkMessage(
-        successCount === 0 && errorCount > 0
-          ? `Ningún usuario creado (${errorCount} fila(s) con error). Abajo verá el motivo por fila.`
-          : errorCount > 0
-            ? `Resumen: ${successCount} creado(s), ${errorCount} con error (detalle en la lista).`
-            : `Carga completada: ${successCount} usuario(s) creado(s) en Microsoft 365.`
-      );
-      setBulkResults(resultsArray);
-    } catch (err) {
-      setBulkStatus('error');
-      setBulkMessage(
-        err instanceof Error ? err.message : 'Error al cargar el archivo de usuarios.'
-      );
-      setBulkResults(null);
-    }
+    await startBulkUploadWithPrecheck('operational', bulkFile);
   };
 
   const handleBulkAdminFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -989,42 +1291,14 @@ const CreateUserForm = () => {
     setBulkAdminStatus('idle');
   };
 
-  /** POST masivo administrativos: Excel → encolado por fila; resultados en `bulkAdminResults`. */
+  /** POST masivo administrativos: prechequeo → modal → encolado por fila. */
   const handleBulkAdminUpload = async () => {
     if (!bulkAdminFile) {
       setBulkAdminMessage('Por favor selecciona un archivo de Excel.');
       setBulkAdminStatus('error');
       return;
     }
-
-    try {
-      setBulkAdminStatus('loading');
-      setBulkAdminMessage('');
-      setBulkAdminResults(null);
-
-      const result = await uploadAdministrativeBulkUsers(bulkAdminFile);
-      const resultsArray = (
-        Array.isArray(result.results) ? result.results : []
-      ) as BulkRowResult[];
-      const successCount = resultsArray.filter((r) => r.status === 'success').length;
-      const errorCount = resultsArray.filter((r) => r.status === 'error').length;
-
-      setBulkAdminStatus('done');
-      setBulkAdminMessage(
-        successCount === 0 && errorCount > 0
-          ? `Ninguna solicitud encolada (${errorCount} fila(s) rechazada(s)). Abajo verá el motivo por fila.`
-          : errorCount > 0
-            ? `Resumen: ${successCount} encolada(s), ${errorCount} con error (detalle en la lista).`
-            : `Carga completada: ${successCount} solicitud(es) encolada(s).`
-      );
-      setBulkAdminResults(resultsArray);
-    } catch (err) {
-      setBulkAdminStatus('error');
-      setBulkAdminMessage(
-        err instanceof Error ? err.message : 'Error al cargar el archivo de usuarios administrativos.'
-      );
-      setBulkAdminResults(null);
-    }
+    await startBulkUploadWithPrecheck('administrative', bulkAdminFile);
   };
 
   /** Prueba escritura en UNC de cola; si OK activa `adminSmbGatePassed` y desbloquea el formulario administrativo. */
@@ -1092,6 +1366,31 @@ const CreateUserForm = () => {
     };
   };
 
+  /** Vacía campos del alta individual (éxito o «Crear otro usuario»). */
+  const resetUserFormFields = () => {
+    setFormData({ ...EMPTY_USER_FORM_DATA });
+    setErrors({});
+    setValidationModalOpen(false);
+    setValidationModalLines([]);
+    setDuplicateConfirmOpen(false);
+    setDuplicateCheckInfo(null);
+    setDuplicateVerificationWarnings([]);
+    pendingSubmitPayloadRef.current = null;
+  };
+
+  const closeCreateErrorModal = () => {
+    setCreateErrorModal(null);
+    setStatus('idle');
+    setErrorMessage('');
+  };
+
+  const showCreateErrorModal = (err: unknown, fallback: string) => {
+    const raw = err instanceof Error ? err.message : fallback;
+    setErrorMessage('');
+    setCreateErrorModal(parseCreateErrorForModal(raw));
+    setStatus('error');
+  };
+
   const performUserCreate = async (
     payload: NonNullable<typeof pendingSubmitPayloadRef.current>
   ) => {
@@ -1113,6 +1412,7 @@ const CreateUserForm = () => {
         groupMemberAdded: response.groupMemberAdded,
         groupMemberships: response.groupMemberships,
       });
+      resetUserFormFields();
       setStatus('success');
     } else {
       const accepted = await createUserViaAdQueue(payload);
@@ -1126,6 +1426,7 @@ const CreateUserForm = () => {
         adminQueueAction: accepted.queueAction ?? 'create',
         adOrganizationalUnitDn: accepted.adOrganizationalUnitDn,
       });
+      resetUserFormFields();
       setStatus('success');
     }
   };
@@ -1136,17 +1437,19 @@ const CreateUserForm = () => {
       setDuplicateConfirmOpen(false);
       return;
     }
+    if (submitInFlightRef.current) {
+      return;
+    }
+    submitInFlightRef.current = true;
     setDuplicateConfirmOpen(false);
     setDuplicateCheckInfo(null);
     setStatus('loading');
     try {
       await performUserCreate(payload);
     } catch (err) {
-      setStatus('error');
-      setErrorMessage(
-        err instanceof Error ? err.message : 'Error al crear el usuario'
-      );
+      showCreateErrorModal(err, 'Error al crear el usuario');
     } finally {
+      submitInFlightRef.current = false;
       pendingSubmitPayloadRef.current = null;
     }
   };
@@ -1156,6 +1459,9 @@ const CreateUserForm = () => {
    */
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitInFlightRef.current || duplicateConfirmOpen) {
+      return;
+    }
     const { valid, errors: nextErrors } = validateForm();
     if (!valid) {
       const lines = (Object.entries(nextErrors) as [keyof UserFormData, string][]).map(
@@ -1167,17 +1473,27 @@ const CreateUserForm = () => {
     }
 
     const payload = buildSubmitPayload();
+    submitInFlightRef.current = true;
     setIsCheckingDuplicate(true);
     setErrorMessage('');
+    setDuplicateVerificationWarnings([]);
 
     try {
       const check = await checkExistingPersonByName({
         givenName: payload.givenName,
         surname1: payload.surname1,
         surname2: payload.surname2,
+        ...(userCreationType === 'administrative' && payload.employeeId
+          ? { employeeId: payload.employeeId }
+          : {}),
       });
 
-      if (check.exists) {
+      const warnings = check.verificationWarnings ?? [];
+      if (warnings.length > 0) {
+        setDuplicateVerificationWarnings(warnings);
+      }
+
+      if (shouldOpenDuplicateModal(check)) {
         pendingSubmitPayloadRef.current = payload;
         setDuplicateCheckInfo(check);
         setDuplicateConfirmOpen(true);
@@ -1187,11 +1503,9 @@ const CreateUserForm = () => {
       setStatus('loading');
       await performUserCreate(payload);
     } catch (err) {
-      setStatus('error');
-      setErrorMessage(
-        err instanceof Error ? err.message : 'Error al crear el usuario'
-      );
+      showCreateErrorModal(err, 'Error al crear el usuario');
     } finally {
+      submitInFlightRef.current = false;
       setIsCheckingDuplicate(false);
     }
   };
@@ -1209,6 +1523,7 @@ const CreateUserForm = () => {
     setCreatedUser(null);
     setStatus('idle');
     setErrorMessage('');
+    setDuplicateVerificationWarnings([]);
     setAdPollLastError(null);
     setBulkResults(null);
     setBulkAdminResults(null);
@@ -1218,18 +1533,7 @@ const CreateUserForm = () => {
     setAdminSmbGatePassed(false);
     setQueueConnStatus('idle');
     setQueueConnDetail(null);
-    setFormData({
-      primerNombre: '',
-      segundoNombre: '',
-      apellido1: '',
-      apellido2: '',
-      puesto: '',
-      departamento: '',
-      sede: '',
-      postalCode: '',
-      cedula: '',
-      ciudad: '',
-    });
+    resetUserFormFields();
   };
 
   /**
@@ -1242,7 +1546,11 @@ const CreateUserForm = () => {
     !bulkAdminResults.some((r) => r.status === 'success')
   ) {
     const failed = bulkAdminResults.filter((r) => r.status === 'error');
-    const rows = failed.length > 0 ? failed : bulkAdminResults;
+    const skipped = bulkAdminResults.filter((r) => r.status === 'skipped');
+    const rows =
+      failed.length > 0 ? failed : skipped.length > 0 ? skipped : bulkAdminResults;
+    const allSkipped =
+      skipped.length > 0 && failed.length === 0 && skipped.length === bulkAdminResults.length;
 
     return (
       <div className="success-wrapper">
@@ -1251,12 +1559,14 @@ const CreateUserForm = () => {
             !
           </div>
 
-          <h2 className="success-title">Ninguna solicitud encolada</h2>
+          <h2 className="success-title">
+            {allSkipped ? 'Filas omitidas por duplicado' : 'Ninguna solicitud encolada'}
+          </h2>
 
           <p className="success-subtitle">
-            Se procesaron {rows.length} fila(s) del Excel y ninguna pasó la validación o el
-            prechequeo para escribir en la cola. Revise el motivo de cada fila, corrija el archivo y
-            vuelva a cargar.
+            {allSkipped
+              ? `Las ${skipped.length} fila(s) con coincidencia se omitieron y no se escribieron en la cola.`
+              : `Se procesaron ${rows.length} fila(s) del Excel y ninguna pasó la validación o el prechequeo para escribir en la cola. Revise el motivo de cada fila, corrija el archivo y vuelva a cargar.`}
           </p>
 
           <h3 className="bulk-admin-section-heading">Detalle por fila del Excel</h3>
@@ -1312,6 +1622,7 @@ const CreateUserForm = () => {
   if (bulkAdminResults && bulkAdminResults.some((r) => r.status === 'success')) {
     const created = bulkAdminResults.filter((r) => r.status === 'success');
     const failed = bulkAdminResults.filter((r) => r.status === 'error');
+    const skipped = bulkAdminResults.filter((r) => r.status === 'skipped');
     const bulkCreates = created.filter((r) => r.queueAction !== 'updateByEmployeeId');
     const bulkUpdates = created.filter((r) => r.queueAction === 'updateByEmployeeId');
 
@@ -1517,6 +1828,34 @@ const CreateUserForm = () => {
             </>
           )}
 
+          {skipped.length > 0 && (
+            <>
+              <h3 className="bulk-admin-section-heading">
+                Filas omitidas ({skipped.length})
+              </h3>
+              <div className="bulk-admin-table-scroll">
+                <div className="bulk-admin-grid bulk-admin-grid--head" role="row">
+                  <span>Fila</span>
+                  <span>Motivo</span>
+                  <span>Código</span>
+                </div>
+                {skipped.map((u, index) => (
+                  <div
+                    className="bulk-admin-grid bulk-admin-grid--row bulk-admin-grid--row-skipped"
+                    key={`admin-bulk-skip-${index}`}
+                    role="row"
+                  >
+                    <span className="bulk-admin-cell-fila">{u.row}</span>
+                    <span className="bulk-admin-cell-msg">
+                      {u.message || 'Fila omitida por duplicado.'}
+                    </span>
+                    <span className="bulk-admin-cell-code">—</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
           <div className="success-note">
             La contraseña y la creación final en Active Directory las aplica el script en el
             servidor. Cada <strong>tabla “Como quedó guardado en el directorio”</strong> se rellena al
@@ -1552,7 +1891,11 @@ const CreateUserForm = () => {
     !bulkResults.some((r) => r.status === 'success')
   ) {
     const failed = bulkResults.filter((r) => r.status === 'error');
-    const rows = failed.length > 0 ? failed : bulkResults;
+    const skipped = bulkResults.filter((r) => r.status === 'skipped');
+    const rows =
+      failed.length > 0 ? failed : skipped.length > 0 ? skipped : bulkResults;
+    const allSkipped =
+      skipped.length > 0 && failed.length === 0 && skipped.length === bulkResults.length;
 
     return (
       <div className="success-wrapper">
@@ -1561,11 +1904,14 @@ const CreateUserForm = () => {
             !
           </div>
 
-          <h2 className="success-title">Ningún usuario creado</h2>
+          <h2 className="success-title">
+            {allSkipped ? 'Filas omitidas por duplicado' : 'Ningún usuario creado'}
+          </h2>
 
           <p className="success-subtitle">
-            Se procesaron {rows.length} fila(s) y ninguna pudo crearse en Microsoft 365. Revise el
-            motivo de cada fila.
+            {allSkipped
+              ? `Las ${skipped.length} fila(s) con coincidencia se omitieron y no se crearon en Microsoft 365.`
+              : `Se procesaron ${rows.length} fila(s) y ninguna pudo crearse en Microsoft 365. Revise el motivo de cada fila.`}
           </p>
 
           <h3 className="bulk-admin-section-heading">Detalle por fila del Excel</h3>
@@ -1613,6 +1959,7 @@ const CreateUserForm = () => {
   if (bulkResults && bulkResults.some((r) => r.status === 'success')) {
     const created = bulkResults.filter((r) => r.status === 'success');
     const failed = bulkResults.filter((r) => r.status === 'error');
+    const skipped = bulkResults.filter((r) => r.status === 'skipped');
 
     return (
       <div className="success-wrapper">
@@ -1683,6 +2030,34 @@ const CreateUserForm = () => {
                     <span className="bulk-admin-cell-code">
                       {u.code?.trim() || '—'}
                     </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {skipped.length > 0 && (
+            <>
+              <h3 className="bulk-admin-section-heading">
+                Filas omitidas ({skipped.length})
+              </h3>
+              <div className="bulk-admin-table-scroll">
+                <div className="bulk-admin-grid bulk-admin-grid--head" role="row">
+                  <span>Fila</span>
+                  <span>Motivo</span>
+                  <span>Código</span>
+                </div>
+                {skipped.map((u, index) => (
+                  <div
+                    className="bulk-admin-grid bulk-admin-grid--row bulk-admin-grid--row-skipped"
+                    key={`skip-${index}`}
+                    role="row"
+                  >
+                    <span className="bulk-admin-cell-fila">{u.row}</span>
+                    <span className="bulk-admin-cell-msg">
+                      {u.message || 'Fila omitida por duplicado.'}
+                    </span>
+                    <span className="bulk-admin-cell-code">—</span>
                   </div>
                 ))}
               </div>
@@ -2217,8 +2592,8 @@ const CreateUserForm = () => {
               </select>
               {errors.sede && <p className="error-text">{errors.sede}</p>}
               <p className="note" style={{ marginTop: 8 }}>
-                Clasificación para asignación automática al grupo de Microsoft 365 correspondiente a la
-                sede.
+                Asignación automática a <code>operarios</code> y <code>colaboradores</code> de la sede
+                (p. ej. operarios.medellin y colaboradores.medellin), más grupos comunes.
               </p>
             </div>
             <div className="field-group">
@@ -2371,8 +2746,9 @@ const CreateUserForm = () => {
                   <p className="bulk-help-intro">
                     Use <strong>Descargar plantilla</strong> si aún no tiene el archivo. Cada fila que
                     pase la validación crea el usuario en <strong>Microsoft 365</strong> (Entra ID) y se
-                    aplican las membresías de grupo según la <strong>sede</strong> y la configuración del
-                    servidor.
+                    aplican las membresías <strong>operarios</strong> y <strong>colaboradores</strong>{' '}
+                    de la sede (p. ej. <code>operarios.medellin</code>,{' '}
+                    <code>colaboradores.medellin</code>) más los grupos comunes del servidor.
                   </p>
 
                   <h4 className="bulk-help-heading">Columnas, obligatoriedad y tipo de dato</h4>
@@ -2442,10 +2818,14 @@ const CreateUserForm = () => {
             <button
               type="button"
               className="primary-btn"
-              disabled={bulkStatus === 'loading'}
+              disabled={bulkStatus === 'loading' || bulkPrecheckLoading || bulkDuplicateModalOpen}
               onClick={handleBulkUpload}
             >
-              {bulkStatus === 'loading' ? 'Cargando usuarios…' : 'Cargar usuarios desde Excel'}
+              {bulkPrecheckLoading
+                ? DUPLICATE_CHECK_UI.verifyingBulkShort
+                : bulkStatus === 'loading'
+                  ? 'Cargando usuarios…'
+                  : 'Cargar usuarios desde Excel'}
             </button>
           </div>
 
@@ -2586,12 +2966,18 @@ const CreateUserForm = () => {
             <button
               type="button"
               className="primary-btn"
-              disabled={bulkAdminStatus === 'loading'}
+              disabled={
+                bulkAdminStatus === 'loading' ||
+                bulkPrecheckLoading ||
+                bulkDuplicateModalOpen
+              }
               onClick={handleBulkAdminUpload}
             >
-              {bulkAdminStatus === 'loading'
-                ? 'Encolando solicitudes…'
-                : 'Cargar usuarios administrativos desde Excel'}
+              {bulkPrecheckLoading
+                ? DUPLICATE_CHECK_UI.verifyingBulkShort
+                : bulkAdminStatus === 'loading'
+                  ? 'Encolando solicitudes…'
+                  : 'Cargar usuarios administrativos desde Excel'}
             </button>
           </div>
 
@@ -2603,22 +2989,86 @@ const CreateUserForm = () => {
         </section>
       )}
 
+      {duplicateVerificationWarnings.length > 0 && (
+        <div
+          className="note"
+          role="status"
+          style={{
+            marginBottom: 12,
+            padding: '10px 12px',
+            borderLeft: '4px solid #b8860b',
+            background: 'rgba(184, 134, 11, 0.08)',
+          }}
+        >
+          <strong>{DUPLICATE_CHECK_UI.verificationIncompleteTitle}</strong>
+          <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
+            {duplicateVerificationWarnings.map((warning) => (
+              <li key={warning}>{warning}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <button
         type="submit"
         className="primary-btn"
         disabled={status === 'loading' || isCheckingDuplicate || duplicateConfirmOpen}
       >
-        {isCheckingDuplicate
-          ? 'Verificando en el directorio…'
-          : status === 'loading'
-            ? 'Creando usuario…'
-            : userCreationType === 'operational'
-              ? 'Crear usuario operativo'
-              : 'Crear usuario administrativo (AD)'}
+        {createButtonLabel(
+          userCreationType,
+          isCheckingDuplicate ? 'verifying' : status === 'loading' ? 'creating' : 'idle'
+        )}
       </button>
 
-      {status === 'error' && <p className="error-text">{errorMessage}</p>}
+      {status === 'loading' && !isCheckingDuplicate && (
+        <p className="note" role="status" style={{ marginTop: 10 }}>
+          {createStatusHint(userCreationType)}
+        </p>
+      )}
+
+      {status === 'error' && errorMessage && !createErrorModal && (
+        <p className="error-text">{errorMessage}</p>
+      )}
       </>
+      )}
+
+      {createErrorModal && (
+        <div
+          className="validation-modal-backdrop"
+          role="presentation"
+          onClick={closeCreateErrorModal}
+        >
+          <div
+            className="validation-modal validation-modal--confirm create-error-modal"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="create-error-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="create-error-modal-title" className="validation-modal-title">
+              {createErrorModal.title}
+            </h2>
+            {createErrorModal.personName ? (
+              <div className="duplicate-employee-id-alert" role="status">
+                <strong>Persona</strong>
+                <p className="create-error-modal-person">{createErrorModal.personName}</p>
+              </div>
+            ) : null}
+            <p className="validation-modal-lead">{createErrorModal.body}</p>
+            {createErrorModal.hint ? (
+              <p className="note create-error-modal-hint">{createErrorModal.hint}</p>
+            ) : null}
+            <div className="validation-modal-actions">
+              <button
+                type="button"
+                className="primary-btn validation-modal-close"
+                onClick={closeCreateErrorModal}
+              >
+                Entendido
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {validationModalOpen && (
@@ -2657,6 +3107,157 @@ const CreateUserForm = () => {
         </div>
       )}
 
+      {bulkDuplicateModalOpen && bulkDuplicateRows.length > 0 && (
+        <div
+          className="validation-modal-backdrop"
+          role="presentation"
+          onClick={() => {
+            setBulkDuplicateModalOpen(false);
+            setBulkDuplicateRows([]);
+            setBulkPendingFile(null);
+          }}
+        >
+          <div
+            className="validation-modal validation-modal--confirm validation-modal--bulk-duplicate"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="bulk-duplicate-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="bulk-duplicate-modal-title" className="validation-modal-title">
+              {DUPLICATE_CHECK_UI.bulkModalTitle}
+            </h2>
+            <p className="validation-modal-lead">
+              Se detectaron <strong>{bulkDuplicateRows.length}</strong> fila(s) con posible
+              duplicado (misma validación que el alta individual). Elija por fila si{' '}
+              <strong>omite</strong> la fila o la <strong>crea de todas formas</strong>. Omitir no
+              borra cuentas existentes en Microsoft 365 ni en Active Directory.
+            </p>
+            <div className="bulk-duplicate-toolbar">
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={() =>
+                  setBulkDuplicateRows((rows) =>
+                    rows.map((r) => ({ ...r, action: 'omit' }))
+                  )
+                }
+              >
+                Omitir todos los duplicados
+              </button>
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={() =>
+                  setBulkDuplicateRows((rows) =>
+                    rows.map((r) => ({ ...r, action: 'create' }))
+                  )
+                }
+              >
+                Crear todos de todas formas
+              </button>
+            </div>
+            <div className="bulk-duplicate-list" role="list">
+              {bulkDuplicateRows.map((item, index) => (
+                <div
+                  className="bulk-duplicate-item"
+                  key={`bulk-dup-${item.rowNumber}`}
+                  role="listitem"
+                >
+                  <div className="bulk-duplicate-item__head">
+                    <span className="bulk-duplicate-item__fila">Fila {item.rowNumber}</span>
+                    <strong className="bulk-duplicate-item__name">{item.displayName}</strong>
+                    {item.check.foundIn?.length ? (
+                      <span className="bulk-duplicate-item__where">
+                        {formatDuplicateFoundInSummary(item.check.foundIn)}
+                      </span>
+                    ) : null}
+                    <label className="bulk-duplicate-item__action-label">
+                      <span className="bulk-duplicate-sr-only">Acción fila {item.rowNumber}</span>
+                      <select
+                        className="bulk-duplicate-item__select"
+                        value={item.action}
+                        onChange={(e) => {
+                          const action = e.target.value as 'omit' | 'create';
+                          setBulkDuplicateRows((rows) =>
+                            rows.map((r, i) =>
+                              i === index ? { ...r, action } : r
+                            )
+                          );
+                        }}
+                      >
+                        <option value="omit">Omitir fila</option>
+                        <option value="create">Crear de todas formas</option>
+                      </select>
+                    </label>
+                  </div>
+                  {item.check.employeeIdDuplicate && (
+                    <div className="duplicate-employee-id-alert" role="alert">
+                      <strong>Cédula / ID ya registrada</strong> en esta fila.
+                    </div>
+                  )}
+                  <details className="bulk-duplicate-item__details">
+                    <summary>Ver detalle de coincidencia</summary>
+                    <div className="duplicate-match-list">
+                      {item.check.microsoft365 && (
+                        <PersonMatchDetailsBlock
+                          sourceLabel="Microsoft 365"
+                          match={item.check.microsoft365}
+                        />
+                      )}
+                      {item.check.activeDirectory && (
+                        <PersonMatchDetailsBlock
+                          sourceLabel="Active Directory (consulta LDAP)"
+                          match={item.check.activeDirectory}
+                        />
+                      )}
+                      {item.check.queuePending && (
+                        <PersonMatchDetailsBlock
+                          sourceLabel="Cola Active Directory (pendiente)"
+                          match={item.check.queuePending}
+                        />
+                      )}
+                      {item.check.queueProcessed && (
+                        <PersonMatchDetailsBlock
+                          sourceLabel="Active Directory (procesado)"
+                          match={item.check.queueProcessed}
+                        />
+                      )}
+                      {item.check.queueHistorical && (
+                        <PersonMatchDetailsBlock
+                          sourceLabel="Registro previo (cola / alta operativa M365)"
+                          match={item.check.queueHistorical}
+                        />
+                      )}
+                    </div>
+                  </details>
+                </div>
+              ))}
+            </div>
+            <div className="validation-modal-actions">
+              <button
+                type="button"
+                className="secondary-btn validation-modal-cancel"
+                onClick={() => {
+                  setBulkDuplicateModalOpen(false);
+                  setBulkDuplicateRows([]);
+                  setBulkPendingFile(null);
+                }}
+              >
+                Cancelar carga
+              </button>
+              <button
+                type="button"
+                className="primary-btn validation-modal-confirm"
+                onClick={() => void handleBulkDuplicateConfirm()}
+              >
+                Continuar con la carga
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {duplicateConfirmOpen && duplicateCheckInfo && (
         <div
           className="validation-modal-backdrop"
@@ -2675,39 +3276,71 @@ const CreateUserForm = () => {
             onClick={(e) => e.stopPropagation()}
           >
             <h2 id="duplicate-confirm-modal-title" className="validation-modal-title">
-              Persona ya registrada
+              {DUPLICATE_CHECK_UI.modalTitle}
             </h2>
             <p className="validation-modal-lead">
-              Ya existe una cuenta con el mismo <strong>nombre y apellidos</strong> (
-              <strong>{duplicateCheckInfo.displayName}</strong>) en el directorio. Revise si es la misma
-              persona antes de continuar.
+              Se encontró coincidencia para <strong>{duplicateCheckInfo.displayName}</strong>
+              {duplicateCheckInfo.foundIn?.length ? (
+                <>
+                  {' '}
+                  en: <strong>{formatDuplicateFoundInSummary(duplicateCheckInfo.foundIn)}</strong>.
+                </>
+              ) : (
+                '.'
+              )}{' '}
+              {DUPLICATE_CHECK_UI.modalLeadSuffix}
             </p>
-            <ul className="validation-modal-list">
+            {duplicateCheckInfo.employeeIdDuplicate && (
+              <div className="duplicate-employee-id-alert" role="alert">
+                <strong>Cédula / ID ya registrada</strong>
+                <ul className="duplicate-employee-id-list">
+                  {duplicateCheckInfo.employeeIdDuplicate.microsoft365 && (
+                    <li>En Microsoft 365 (id. de empleado).</li>
+                  )}
+                  {duplicateCheckInfo.employeeIdDuplicate.queuePending && (
+                    <li>En la cola del servidor (solicitud pendiente de Active Directory).</li>
+                  )}
+                  {duplicateCheckInfo.employeeIdDuplicate.queueProcessed && (
+                    <li>En Active Directory (registro en carpeta procesados del script).</li>
+                  )}
+                </ul>
+              </div>
+            )}
+            <div className="duplicate-match-list">
               {duplicateCheckInfo.microsoft365 && (
-                <li>
-                  <strong>Microsoft 365:</strong>{' '}
-                  {duplicateCheckInfo.microsoft365.userPrincipalName ||
-                    duplicateCheckInfo.microsoft365.displayName}
-                  {duplicateCheckInfo.microsoft365.employeeId
-                    ? ` (cédula / id. empleado: ${duplicateCheckInfo.microsoft365.employeeId})`
-                    : ''}
-                </li>
+                <PersonMatchDetailsBlock
+                  sourceLabel="Microsoft 365"
+                  match={duplicateCheckInfo.microsoft365}
+                />
               )}
               {duplicateCheckInfo.activeDirectory && (
-                <li>
-                  <strong>Active Directory:</strong>{' '}
-                  {duplicateCheckInfo.activeDirectory.samAccountName ||
-                    duplicateCheckInfo.activeDirectory.userPrincipalName ||
-                    duplicateCheckInfo.activeDirectory.displayName}
-                  {duplicateCheckInfo.activeDirectory.employeeId
-                    ? ` (cédula / employeeID: ${duplicateCheckInfo.activeDirectory.employeeId})`
-                    : ''}
-                </li>
+                <PersonMatchDetailsBlock
+                  sourceLabel="Active Directory (consulta LDAP)"
+                  match={duplicateCheckInfo.activeDirectory}
+                />
               )}
-            </ul>
+              {duplicateCheckInfo.queuePending && (
+                <PersonMatchDetailsBlock
+                  sourceLabel="Cola Active Directory (pendiente)"
+                  match={duplicateCheckInfo.queuePending}
+                />
+              )}
+              {duplicateCheckInfo.queueProcessed && (
+                <PersonMatchDetailsBlock
+                  sourceLabel="Active Directory (procesado)"
+                  match={duplicateCheckInfo.queueProcessed}
+                />
+              )}
+              {duplicateCheckInfo.queueHistorical && (
+                <PersonMatchDetailsBlock
+                  sourceLabel="Registro previo (cola / alta operativa M365)"
+                  match={duplicateCheckInfo.queueHistorical}
+                />
+              )}
+            </div>
             <p className="validation-modal-lead validation-modal-lead--tight">
-              Si confirma, se creará o encolará la solicitud de todas formas (puede generar otra cuenta
-              técnica con sufijo distinto). Si no es correcto, pulse <strong>Cancelar</strong>.
+              {duplicateModalConfirmFootnote(userCreationType)} Si no es correcto, pulse{' '}
+              <strong>Cancelar</strong>.
             </p>
             <div className="validation-modal-actions">
               <button

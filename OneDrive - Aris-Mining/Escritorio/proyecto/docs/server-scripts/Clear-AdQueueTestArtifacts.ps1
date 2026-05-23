@@ -7,10 +7,10 @@
   NO elimina usuarios en Active Directory ni Microsoft 365.
 
 .PARAMETER QueuePath
-  Carpeta pending (por defecto la misma que en .env: \\10.10.11.4\scripts\pending).
+  Carpeta pending (por defecto la misma que en .env: \\192.168.101.13\scripts\pending).
 
 .PARAMETER ScriptsRoot
-  Raíz explícita (ej. \\10.10.11.4\scripts). Si está vacío, se infiere del padre de QueuePath.
+  Raíz explícita (ej. \\192.168.101.13\scripts). Si está vacío, se infiere del padre de QueuePath.
 
 .PARAMETER WhatIf
   Solo muestra qué se borraría, sin eliminar archivos.
@@ -25,11 +25,11 @@
   .\Clear-AdQueueTestArtifacts.ps1 -Force
 
 .EXAMPLE
-  .\Clear-AdQueueTestArtifacts.ps1 -ScriptsRoot '\\10.10.11.4\scripts' -Force
+  .\Clear-AdQueueTestArtifacts.ps1 -ScriptsRoot '\\192.168.101.13\scripts' -Force
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
-    [string]$QueuePath          = '\\10.10.11.4\scripts\pending',
+    [string]$QueuePath          = '\\192.168.101.13\scripts\pending',
     [string]$ScriptsRoot        = '',
     [string]$ResultsSubfolder   = 'resultados',
     [string]$ProcessedSubfolder = 'procesados',

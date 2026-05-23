@@ -1,14 +1,7 @@
-/**
- * Texto genérico cuando el mensaje original expone rutas UNC / Windows ruidosas al usuario.
- * (Evita que el prechequeo o la API devuelvan cadenas largas de sistema aunque el archivo se haya creado.)
- */
+/** Mensaje amigable si el error original expone rutas UNC (el archivo puede existir igual). */
 export const PUBLIC_SMB_OR_UNC_HINT =
   'No se pudo acceder a la carpeta de cola o al recurso de red (SMB). Compruebe AD_QUEUE_UNC, VPN, permisos y que la cuenta del proceso Node tenga el mismo acceso que en el Explorador de archivos.';
 
-/**
- * @param {string} text
- * @returns {boolean}
- */
 export function isUncFilesystemNoiseMessage(text) {
   const t = String(text || '').toLowerCase();
   if (!t) return false;
@@ -22,11 +15,7 @@ export function isUncFilesystemNoiseMessage(text) {
   return false;
 }
 
-/**
- * Mensaje seguro para API cuando un `catch` recibe un Error de red/archivo mezclado con Graph/LDAP.
- * @param {unknown} err
- * @returns {string}
- */
+/** Mensaje API sin rutas UNC cuando el catch mezcla red/archivo con Graph/LDAP. */
 export function formatPrecheckOrMixedFailureDetail(err) {
   const raw = err != null && typeof err === 'object' && 'message' in err && err.message != null
     ? String(err.message)

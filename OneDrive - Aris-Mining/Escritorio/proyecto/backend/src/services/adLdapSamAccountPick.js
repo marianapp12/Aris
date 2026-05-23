@@ -42,11 +42,11 @@ export async function pickFirstAvailableSamAndUpnForAdQueue(params) {
   const s2 = surname2?.trim() || '';
 
   const availabilityCtx = await createAdministrativeAvailabilityContext();
+  const reservedSams = await listOperationalM365ReservedSamAccountNames();
 
   try {
     let firstRejectedUpn = null;
     for (const localPartRaw of iterateLocalPartCandidates(g, s1, s2 || undefined)) {
-      const reservedSams = await listOperationalM365ReservedSamAccountNames();
       const sam = truncateForSamAccountName(localPartRaw);
       const userPrincipalName = `${sam}@${domain}`;
       if (isCandidateSamBlockedByOperationalM365(sam, reservedSams)) {

@@ -18,6 +18,7 @@ import { getGraphClient } from '../config/graphClient.js';
 import { AdministrativePrecheckError } from '../services/graphAdministrativePrecheck.js';
 import { pickFirstAvailableSamAndUpnForAdQueue } from '../services/adLdapSamAccountPick.js';
 import { parseAdministrativeBulkSheet } from '../utils/excelAdministrativeBulkParse.js';
+import { parseOmitRowsSet } from '../utils/parseOmitRows.js';
 import { QUEUE_REQUEST_ID_RE } from '../utils/queueRequestId.js';
 import {
   formatPrecheckOrMixedFailureDetail,
@@ -35,9 +36,7 @@ const toTitleCase = (value) =>
 const onlyLettersRegex = /[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s-]/;
 const hasInvalidCharsForName = (value) => value && onlyLettersRegex.test(value);
 
-/**
- * POST /api/users y POST /api/users/administrative — 202 Accepted + requestId (cola SMB)
- */
+/** POST /api/users/administrative — encola JSON en SMB; el script PS crea el usuario en AD. */
 export const createUserViaAdQueue = async (req, res) => {
   const validation = validateAdministrativePayload(req.body);
   if (!validation.ok) {
@@ -239,10 +238,21 @@ export const createAdministrativeUsersBulk = async (req, res) => {
 
     const results = [];
     const seenEmployeeIds = new Set();
+    const omitRows = parseOmitRowsSet(req.body?.omitRows);
 
     for (let index = 0; index < rows.length; index++) {
       const row = rows[index];
       const rowNumber = index + firstDataExcelRow;
+
+      if (omitRows.has(rowNumber)) {
+        results.push({
+          row: rowNumber,
+          status: 'skipped',
+          message:
+            'Fila omitida: no se encoló la solicitud (duplicado detectado en el prechequeo; eligió omitir).',
+        });
+        continue;
+      }
 
       const primerNombre = (row.PrimerNombre || '').toString().trim();
       const segundoNombre = (row.SegundoNombre || '').toString().trim();
