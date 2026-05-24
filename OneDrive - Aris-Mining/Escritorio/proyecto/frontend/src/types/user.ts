@@ -64,9 +64,10 @@ export interface ExistingPersonDirectoryMatch {
   postalCode?: string;
 }
 
-/** Duplicidad de cédula detectada en M365 y/o carpetas de cola AD. */
+/** Duplicidad de cédula detectada en M365, AD (LDAP) y/o carpetas de cola AD. */
 export interface EmployeeIdDuplicateCheck {
   microsoft365: ExistingPersonDirectoryMatch | null;
+  activeDirectory: ExistingPersonDirectoryMatch | null;
   queuePending: ExistingPersonDirectoryMatch | null;
   queueProcessed: ExistingPersonDirectoryMatch | null;
 }
@@ -101,7 +102,9 @@ export interface CheckExistingPersonResponse {
   queuePending: ExistingPersonDirectoryMatch | null;
   /** Registro en procesados (usuario ya creado en AD por el script). */
   queueProcessed: ExistingPersonDirectoryMatch | null;
-  /** Alta operativa M365 o resultado previo en cola (mismo nombre). */
+  /** Resultado previo en cola AD (alta administrativa / resultado-*.json). */
+  adminQueueHistorical?: ExistingPersonDirectoryMatch | null;
+  /** Alta operativa M365 previa (espejo SMB o registro en sesión). */
   queueHistorical?: ExistingPersonDirectoryMatch | null;
   employeeIdDuplicate: EmployeeIdDuplicateCheck | null;
   /** Avisos si Graph u otra fuente no pudo consultarse (exists puede ser false). */

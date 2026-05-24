@@ -37,6 +37,10 @@ import {
   parseCreateErrorForModal,
   type CreateErrorModalContent,
 } from '../utils/createErrorModalContent';
+import {
+  isAdministrativeBulkEmployeeIdBlocked,
+  listEmployeeIdDuplicateSources,
+} from '../utils/bulkDuplicateEmployeeId';
 import './CreateUserForm.css';
 
 /**
@@ -207,10 +211,12 @@ const FOUND_IN_LABELS: Record<string, string> = {
   activeDirectory: 'Active Directory (LDAP)',
   queuePending: 'Cola del servidor (pendiente de procesar en AD)',
   queueProcessed: 'Active Directory (ya procesado — carpeta procesados)',
-  queueHistorical: 'Registro previo (cola / alta operativa M365)',
+  adminQueueHistorical: 'Active Directory — creación previa en cola',
+  queueHistorical: 'Microsoft 365 — creación operativa previa',
   employeeIdMicrosoft365: 'Cédula en Microsoft 365',
   employeeIdQueuePending: 'Cédula en cola (pendiente)',
   employeeIdQueueProcessed: 'Cédula ya procesada en AD',
+  employeeIdActiveDirectory: 'Cédula en Active Directory',
 };
 
 function formatDuplicateFoundInSummary(foundIn: string[]): string {
@@ -588,7 +594,11 @@ type BulkDuplicateRowUi = {
   displayName: string;
   check: CheckExistingPersonResponse;
   action: 'omit' | 'create';
+  /** Cédula ya en AD/cola/M365: la fila no se puede encolar (solo administrativo). */
+  employeeIdBlocked: boolean;
 };
+
+type BulkDuplicateListFilter = 'all' | 'blocked' | 'allowed';
 
 type BulkRowResult = {
   row: number;
@@ -675,6 +685,8 @@ const CreateUserForm = () => {
 
   const [bulkDuplicateModalOpen, setBulkDuplicateModalOpen] = useState(false);
   const [bulkDuplicateRows, setBulkDuplicateRows] = useState<BulkDuplicateRowUi[]>([]);
+  const [bulkDuplicateListFilter, setBulkDuplicateListFilter] =
+    useState<BulkDuplicateListFilter>('all');
   const [bulkPendingFile, setBulkPendingFile] = useState<File | null>(null);
   const [bulkPendingKind, setBulkPendingKind] = useState<BulkExcelKind>('operational');
   const [bulkPrecheckLoading, setBulkPrecheckLoading] = useState(false);
@@ -1190,9 +1202,13 @@ const CreateUserForm = () => {
           ? await precheckBulkOperationalUsers(file)
           : await precheckBulkAdministrativeUsers(file);
 
-      const duplicates = (precheck.rows || []).filter(
-        (r) => r.check && shouldOpenDuplicateModal(r.check)
-      ) as Array<{
+      const duplicates = (precheck.rows || []).filter((r) => {
+        if (!r.check) return false;
+        if (kind === 'administrative' && isAdministrativeBulkEmployeeIdBlocked(r.check)) {
+          return true;
+        }
+        return shouldOpenDuplicateModal(r.check);
+      }) as Array<{
         row: number;
         displayName: string;
         exists: boolean;
@@ -1207,13 +1223,19 @@ const CreateUserForm = () => {
       setBulkPendingFile(file);
       setBulkPendingKind(kind);
       setBulkDuplicateRows(
-        duplicates.map((d) => ({
-          rowNumber: d.row,
-          displayName: d.displayName,
-          check: d.check,
-          action: 'omit',
-        }))
+        duplicates.map((d) => {
+          const employeeIdBlocked =
+            kind === 'administrative' && isAdministrativeBulkEmployeeIdBlocked(d.check);
+          return {
+            rowNumber: d.row,
+            displayName: d.displayName,
+            check: d.check,
+            action: 'omit' as const,
+            employeeIdBlocked,
+          };
+        })
       );
+      setBulkDuplicateListFilter('all');
       setBulkDuplicateModalOpen(true);
       if (kind === 'operational') {
         setBulkStatus('idle');
@@ -1250,7 +1272,7 @@ const CreateUserForm = () => {
       return;
     }
     const omitRows = bulkDuplicateRows
-      .filter((r) => r.action === 'omit')
+      .filter((r) => r.action === 'omit' || r.employeeIdBlocked)
       .map((r) => r.rowNumber);
     setBulkDuplicateModalOpen(false);
     setBulkDuplicateRows([]);
@@ -1643,7 +1665,7 @@ const CreateUserForm = () => {
           <p className="success-subtitle">
             {bulkCreates.length > 0 && (
               <>
-                {bulkCreates.length} alta(s) nueva(s) en cola para Active Directory.{' '}
+                {bulkCreates.length} creación(es) nueva(s) en cola para Active Directory.{' '}
               </>
             )}
             {bulkUpdates.length > 0 && (
@@ -1654,7 +1676,7 @@ const CreateUserForm = () => {
             )}
             Archivos JSON en la carpeta compartida. El <strong>UPN, correo y usuario (sAM)</strong>{' '}
             de cada fila se rellenan <strong>cuando el script confirma</strong> el resultado en el
-            directorio (mismo criterio que el alta individual).{' '}
+            directorio (mismo criterio que la creación individual).{' '}
             {encoladoPendienteAd > 0
               ? `Consultando en el servidor la confirmación de Active Directory para ${encoladoPendienteAd} solicitud(es)…`
               : 'Consulta a resultados de AD finalizada.'}
@@ -1693,7 +1715,7 @@ const CreateUserForm = () => {
                   >
                     {u.queueAction === 'updateByEmployeeId'
                       ? 'Actualización de perfil'
-                      : 'Alta nueva'}
+                      : 'Creación nueva'}
                   </span>
                 </div>
                 <div className="bulk-admin-row-card__meta">
@@ -2754,7 +2776,7 @@ const CreateUserForm = () => {
                   <h4 className="bulk-help-heading">Columnas, obligatoriedad y tipo de dato</h4>
                   <p className="bulk-help-note bulk-help-note--emphasis">
                     Use la <strong>plantilla descargable</strong> para no omitir columnas: el archivo debe
-                    traer <strong>todas las columnas previstas</strong>. En alta operativa solo son{' '}
+                    traer <strong>todas las columnas previstas</strong>. En creación operativa solo son{' '}
                     <strong>opcionales</strong> segundo nombre, segundo apellido y centro de costos; el
                     resto es <strong>obligatorio</strong>. En <strong>nombres, apellidos, puesto y departamento</strong>{' '}
                     use solo letras (incluye tildes y ñ), espacios y guiones; máximo 50 caracteres en
@@ -2901,7 +2923,7 @@ const CreateUserForm = () => {
 
                   <h4 className="bulk-help-heading">Columnas, obligatoriedad y tipo de dato</h4>
                   <p className="bulk-help-note bulk-help-note--emphasis">
-                    Use la <strong>plantilla descargable</strong> para no omitir columnas. En alta
+                    Use la <strong>plantilla descargable</strong> para no omitir columnas. En creación
                     administrativa son <strong>opcionales</strong> segundo nombre, segundo apellido y
                     centro de costos; el resto de columnas de la plantilla es <strong>obligatorio</strong>. Salvo donde se indica
                     «solo dígitos», el contenido se interpreta como <strong>texto</strong> (incluido documento
@@ -3109,7 +3131,7 @@ const CreateUserForm = () => {
 
       {bulkDuplicateModalOpen && bulkDuplicateRows.length > 0 && (
         <div
-          className="validation-modal-backdrop"
+          className="validation-modal-backdrop validation-modal-backdrop--bulk"
           role="presentation"
           onClick={() => {
             setBulkDuplicateModalOpen(false);
@@ -3124,80 +3146,270 @@ const CreateUserForm = () => {
             aria-labelledby="bulk-duplicate-modal-title"
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 id="bulk-duplicate-modal-title" className="validation-modal-title">
-              {DUPLICATE_CHECK_UI.bulkModalTitle}
-            </h2>
-            <p className="validation-modal-lead">
-              Se detectaron <strong>{bulkDuplicateRows.length}</strong> fila(s) con posible
-              duplicado (misma validación que el alta individual). Elija por fila si{' '}
-              <strong>omite</strong> la fila o la <strong>crea de todas formas</strong>. Omitir no
-              borra cuentas existentes en Microsoft 365 ni en Active Directory.
-            </p>
-            <div className="bulk-duplicate-toolbar">
-              <button
-                type="button"
-                className="secondary-btn"
-                onClick={() =>
-                  setBulkDuplicateRows((rows) =>
-                    rows.map((r) => ({ ...r, action: 'omit' }))
-                  )
-                }
-              >
-                Omitir todos los duplicados
-              </button>
-              <button
-                type="button"
-                className="secondary-btn"
-                onClick={() =>
-                  setBulkDuplicateRows((rows) =>
-                    rows.map((r) => ({ ...r, action: 'create' }))
-                  )
-                }
-              >
-                Crear todos de todas formas
-              </button>
-            </div>
-            <div className="bulk-duplicate-list" role="list">
-              {bulkDuplicateRows.map((item, index) => (
+            {(() => {
+              const isAdminBulk = bulkPendingKind === 'administrative';
+              const bulkBlockedCount = bulkDuplicateRows.filter((r) => r.employeeIdBlocked).length;
+              const bulkReviewCount = bulkDuplicateRows.length - bulkBlockedCount;
+              const filteredBulkRows = isAdminBulk
+                ? bulkDuplicateRows.filter((item) => {
+                    if (bulkDuplicateListFilter === 'blocked') return item.employeeIdBlocked;
+                    if (bulkDuplicateListFilter === 'allowed') return !item.employeeIdBlocked;
+                    return true;
+                  })
+                : bulkDuplicateRows;
+              const filterTabs: {
+                id: BulkDuplicateListFilter;
+                label: string;
+                count: number;
+                description: string;
+              }[] = [
+                {
+                  id: 'all',
+                  label: 'Todos',
+                  count: bulkDuplicateRows.length,
+                  description: 'Todas las filas con coincidencia',
+                },
+                {
+                  id: 'blocked',
+                  label: 'No permitidos',
+                  count: bulkBlockedCount,
+                  description: 'Cédula en uso; se omiten al continuar',
+                },
+                {
+                  id: 'allowed',
+                  label: 'Puede decidir',
+                  count: bulkReviewCount,
+                  description: 'Usted elige omitir o crear',
+                },
+              ];
+              return (
+                <>
+            <header className="bulk-duplicate-modal__header">
+              <div className="bulk-duplicate-modal__title-row">
+                <span className="bulk-duplicate-modal__icon" aria-hidden>
+                  ⚠
+                </span>
+                <div>
+                  <h2 id="bulk-duplicate-modal-title" className="bulk-duplicate-modal__title">
+                    {DUPLICATE_CHECK_UI.bulkModalTitle}
+                  </h2>
+                  <p className="bulk-duplicate-modal__subtitle">
+                    {isAdminBulk
+                      ? 'Use las pestañas para ver qué filas no se pueden crear y cuáles puede decidir usted.'
+                      : 'Revise cada fila con coincidencia y elija si omite o crea de todas formas.'}
+                  </p>
+                </div>
+              </div>
+              {isAdminBulk ? (
+                <p className="bulk-duplicate-modal__summary" role="status">
+                  {bulkDuplicateRows.length} fila{bulkDuplicateRows.length === 1 ? '' : 's'} con
+                  posible duplicado
+                </p>
+              ) : (
+                <p className="bulk-duplicate-modal__summary" role="status">
+                  {bulkDuplicateRows.length} fila{bulkDuplicateRows.length === 1 ? '' : 's'} — todas
+                  las coincidencias
+                </p>
+              )}
+            </header>
+
+            {isAdminBulk ? (
+              <>
                 <div
-                  className="bulk-duplicate-item"
+                  className="bulk-duplicate-filters"
+                  role="tablist"
+                  aria-label="Filtrar filas del Excel"
+                >
+                  {filterTabs.map((tab) => {
+                    const isActive = bulkDuplicateListFilter === tab.id;
+                    const isDisabled = tab.count === 0;
+                    return (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        role="tab"
+                        id={`bulk-dup-tab-${tab.id}`}
+                        aria-selected={isActive}
+                        aria-controls="bulk-duplicate-list-panel"
+                        disabled={isDisabled}
+                        title={isDisabled ? 'No hay filas en esta categoría' : tab.description}
+                        className={`bulk-duplicate-filter bulk-duplicate-filter--${tab.id}${
+                          isActive ? ' bulk-duplicate-filter--active' : ''
+                        }${isDisabled ? ' bulk-duplicate-filter--disabled' : ''}`}
+                        onClick={() => {
+                          if (!isDisabled) setBulkDuplicateListFilter(tab.id);
+                        }}
+                      >
+                        <span className="bulk-duplicate-filter__label">{tab.label}</span>
+                        <span className="bulk-duplicate-filter__count">{tab.count}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="bulk-duplicate-filters__hint" id="bulk-dup-tab-hint">
+                  {filterTabs.find((t) => t.id === bulkDuplicateListFilter)?.description}
+                </p>
+              </>
+            ) : null}
+
+            {isAdminBulk && bulkBlockedCount > 0 ? (
+              <p className="bulk-duplicate-modal__hint">
+                En <strong>No permitidos</strong>, la cédula ya está en Active Directory o en cola;
+                esas filas no se encolan.
+              </p>
+            ) : null}
+
+            {bulkReviewCount > 0 ? (
+              <div className="bulk-duplicate-toolbar">
+                <span className="bulk-duplicate-toolbar__label">Acciones rápidas</span>
+                <div className="bulk-duplicate-toolbar__buttons">
+                  <button
+                    type="button"
+                    className="secondary-btn bulk-duplicate-toolbar__btn"
+                    onClick={() =>
+                      setBulkDuplicateRows((rows) =>
+                        rows.map((r) => ({ ...r, action: 'omit' }))
+                      )
+                    }
+                  >
+                    Omitir todos
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-btn bulk-duplicate-toolbar__btn"
+                    onClick={() =>
+                      setBulkDuplicateRows((rows) =>
+                        rows.map((r) =>
+                          r.employeeIdBlocked ? r : { ...r, action: 'create' as const }
+                        )
+                      )
+                    }
+                  >
+                    Crear todos (permitidos)
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            <div
+              className="bulk-duplicate-list"
+              id="bulk-duplicate-list-panel"
+              role={isAdminBulk ? 'tabpanel' : undefined}
+              aria-labelledby={
+                isAdminBulk ? `bulk-dup-tab-${bulkDuplicateListFilter}` : undefined
+              }
+            >
+              {filteredBulkRows.length === 0 ? (
+                <p className="bulk-duplicate-list__empty">
+                  No hay filas en esta vista. Pruebe otra pestaña.
+                </p>
+              ) : null}
+              {filteredBulkRows.map((item) => {
+                const rowIndex = bulkDuplicateRows.findIndex(
+                  (r) => r.rowNumber === item.rowNumber
+                );
+                const employeeIdSources = listEmployeeIdDuplicateSources(
+                  item.check.employeeIdDuplicate
+                );
+                const showEmployeeIdBlock =
+                  item.employeeIdBlocked && employeeIdSources.length > 0;
+                const nameOnlyDuplicate =
+                  !item.employeeIdBlocked &&
+                  (item.check.microsoft365 ||
+                    item.check.activeDirectory ||
+                    item.check.queuePending ||
+                    item.check.queueProcessed ||
+                    item.check.adminQueueHistorical ||
+                    item.check.queueHistorical);
+
+                return (
+                <div
+                  className={
+                    showEmployeeIdBlock
+                      ? 'bulk-duplicate-item bulk-duplicate-item--employee-id-blocked'
+                      : 'bulk-duplicate-item'
+                  }
                   key={`bulk-dup-${item.rowNumber}`}
                   role="listitem"
                 >
                   <div className="bulk-duplicate-item__head">
-                    <span className="bulk-duplicate-item__fila">Fila {item.rowNumber}</span>
-                    <strong className="bulk-duplicate-item__name">{item.displayName}</strong>
-                    {item.check.foundIn?.length ? (
-                      <span className="bulk-duplicate-item__where">
-                        {formatDuplicateFoundInSummary(item.check.foundIn)}
-                      </span>
-                    ) : null}
-                    <label className="bulk-duplicate-item__action-label">
-                      <span className="bulk-duplicate-sr-only">Acción fila {item.rowNumber}</span>
-                      <select
-                        className="bulk-duplicate-item__select"
-                        value={item.action}
-                        onChange={(e) => {
-                          const action = e.target.value as 'omit' | 'create';
-                          setBulkDuplicateRows((rows) =>
-                            rows.map((r, i) =>
-                              i === index ? { ...r, action } : r
-                            )
-                          );
-                        }}
-                      >
-                        <option value="omit">Omitir fila</option>
-                        <option value="create">Crear de todas formas</option>
-                      </select>
-                    </label>
+                    <div className="bulk-duplicate-item__identity">
+                      <span className="bulk-duplicate-item__fila">Fila {item.rowNumber}</span>
+                      <strong className="bulk-duplicate-item__name">{item.displayName}</strong>
+                      {item.check.foundIn?.length ? (
+                        <span className="bulk-duplicate-item__where">
+                          {formatDuplicateFoundInSummary(item.check.foundIn)}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="bulk-duplicate-item__aside">
+                      {showEmployeeIdBlock ? (
+                        <span className="bulk-duplicate-item__blocked-badge">
+                          <span className="bulk-duplicate-item__blocked-icon" aria-hidden>
+                            ✕
+                          </span>
+                          Cédula en uso
+                        </span>
+                      ) : (
+                        <label className="bulk-duplicate-item__action-label">
+                          <span className="bulk-duplicate-item__action-caption">Acción</span>
+                          <span className="bulk-duplicate-sr-only">
+                            Acción fila {item.rowNumber}
+                          </span>
+                          <select
+                            className={`bulk-duplicate-item__select bulk-duplicate-item__select--${item.action}`}
+                            value={item.action}
+                            onChange={(e) => {
+                              const action = e.target.value as 'omit' | 'create';
+                              setBulkDuplicateRows((rows) =>
+                                rows.map((r, i) =>
+                                  i === rowIndex ? { ...r, action } : r
+                                )
+                              );
+                            }}
+                          >
+                            <option value="omit">Omitir fila</option>
+                            <option value="create">Crear de todas formas</option>
+                          </select>
+                        </label>
+                      )}
+                    </div>
                   </div>
-                  {item.check.employeeIdDuplicate && (
+                  {showEmployeeIdBlock ? (
+                    <div
+                      className="duplicate-employee-id-alert duplicate-employee-id-alert--blocked"
+                      role="alert"
+                    >
+                      <div className="duplicate-employee-id-alert__title-row">
+                        <span className="duplicate-employee-id-alert__glyph" aria-hidden>
+                          !
+                        </span>
+                        <strong>Cédula ya creada en el directorio</strong>
+                      </div>
+                      <p className="duplicate-employee-id-alert__lead">
+                        Esta fila no se encolará. El documento ya pertenece a la cuenta indicada
+                        abajo.
+                      </p>
+                      <div className="duplicate-match-list duplicate-match-list--in-alert">
+                        {employeeIdSources.map((src) => (
+                          <PersonMatchDetailsBlock
+                            key={src.key}
+                            sourceLabel={src.label}
+                            match={src.match}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ) : item.check.employeeIdDuplicate ? (
                     <div className="duplicate-employee-id-alert" role="alert">
                       <strong>Cédula / ID ya registrada</strong> en esta fila.
                     </div>
-                  )}
-                  <details className="bulk-duplicate-item__details">
-                    <summary>Ver detalle de coincidencia</summary>
+                  ) : null}
+                  {nameOnlyDuplicate ? (
+                  <details className="bulk-duplicate-item__details" open>
+                    <summary className="bulk-duplicate-item__details-summary">
+                      Ver detalle de coincidencia
+                    </summary>
                     <div className="duplicate-match-list">
                       {item.check.microsoft365 && (
                         <PersonMatchDetailsBlock
@@ -3223,18 +3435,27 @@ const CreateUserForm = () => {
                           match={item.check.queueProcessed}
                         />
                       )}
+                      {item.check.adminQueueHistorical && (
+                        <PersonMatchDetailsBlock
+                          sourceLabel="Active Directory — creación previa en cola"
+                          match={item.check.adminQueueHistorical}
+                        />
+                      )}
                       {item.check.queueHistorical && (
                         <PersonMatchDetailsBlock
-                          sourceLabel="Registro previo (cola / alta operativa M365)"
+                          sourceLabel="Microsoft 365 — creación operativa previa"
                           match={item.check.queueHistorical}
                         />
                       )}
                     </div>
                   </details>
+                  ) : null}
                 </div>
-              ))}
+              );
+              })}
             </div>
-            <div className="validation-modal-actions">
+
+            <footer className="bulk-duplicate-modal__footer validation-modal-actions">
               <button
                 type="button"
                 className="secondary-btn validation-modal-cancel"
@@ -3253,7 +3474,10 @@ const CreateUserForm = () => {
               >
                 Continuar con la carga
               </button>
-            </div>
+            </footer>
+                </>
+              );
+            })()}
           </div>
         </div>
       )}
@@ -3303,6 +3527,9 @@ const CreateUserForm = () => {
                   {duplicateCheckInfo.employeeIdDuplicate.queueProcessed && (
                     <li>En Active Directory (registro en carpeta procesados del script).</li>
                   )}
+                  {duplicateCheckInfo.employeeIdDuplicate.activeDirectory && (
+                    <li>En Active Directory (consulta por cédula / employeeID).</li>
+                  )}
                 </ul>
               </div>
             )}
@@ -3331,9 +3558,15 @@ const CreateUserForm = () => {
                   match={duplicateCheckInfo.queueProcessed}
                 />
               )}
+              {duplicateCheckInfo.adminQueueHistorical && (
+                <PersonMatchDetailsBlock
+                  sourceLabel="Active Directory — creación previa en cola"
+                  match={duplicateCheckInfo.adminQueueHistorical}
+                />
+              )}
               {duplicateCheckInfo.queueHistorical && (
                 <PersonMatchDetailsBlock
-                  sourceLabel="Registro previo (cola / alta operativa M365)"
+                  sourceLabel="Microsoft 365 — creación operativa previa"
                   match={duplicateCheckInfo.queueHistorical}
                 />
               )}

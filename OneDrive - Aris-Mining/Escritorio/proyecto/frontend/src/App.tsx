@@ -163,9 +163,9 @@ const App: React.FC = () => {
           <div className="page-header">
             <h1 className="page-title">Creación de usuarios</h1>
             <p className="page-description">
-              Selecciona el tipo de alta y completa el formulario.
+              Selecciona el tipo de creación y completa el formulario.
             </p>
-            <div className="flow-summary-grid" aria-label="Resumen de tipos de alta">
+            <div className="flow-summary-grid" aria-label="Resumen de tipos de creación">
               <article className="flow-summary-card">
                 <h2 className="flow-summary-title">Operativo (Microsoft 365)</h2>
                 <p className="flow-summary-text">

@@ -29,6 +29,7 @@ export async function registerOperationalM365AfterCreate(params) {
       samAccountName: sam,
       userPrincipalName,
       email: params.email || userPrincipalName,
+      registrySource: 'operationalM365',
     });
   }
 

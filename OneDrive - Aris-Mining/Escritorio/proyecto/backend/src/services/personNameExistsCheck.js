@@ -13,7 +13,9 @@ import {
 } from '../utils/personDisplayName.js';
 import { buildPersonMatch } from '../utils/personMatchBuild.js';
 import { findPersonInQueueFolders } from './personQueueFolderCheck.js';
-import { findRecentPersonByDisplayName } from './operationalPersonRegistry.js';
+import {
+  findRecentPersonByDisplayName,
+} from './operationalPersonRegistry.js';
 import { findUserByEmployeeId } from './graphAdministrativePrecheck.js';
 
 function sleep(ms) {
@@ -183,6 +185,82 @@ export async function findPersonInMicrosoft365WithRetry(
  * @param {string} displayName
  * @returns {Promise<PersonDirectoryMatch | undefined>}
  */
+/**
+ * Busca en AD por employeeID (cédula). Usado en prechequeo masivo e individual.
+ * @param {string} employeeId
+ * @returns {Promise<PersonDirectoryMatch | undefined>}
+ */
+export async function findPersonByEmployeeIdInActiveDirectoryLdap(employeeId) {
+  const config = getAdLdapPrecheckConfig();
+  if (!config.enabled) return undefined;
+
+  const id = String(employeeId || '').trim();
+  if (!id) return undefined;
+
+  const client = new Client({
+    url: config.url,
+    tlsOptions: { rejectUnauthorized: config.tlsRejectUnauthorized },
+    timeout: config.timeoutMs,
+    connectTimeout: config.connectTimeoutMs,
+  });
+
+  try {
+    await client.bind(config.bindDn, config.bindPassword);
+    const filter = `(employeeID=${escapeLdapFilterValue(id)})`;
+    const { searchEntries } = await client.search(config.searchBase, {
+      filter,
+      scope: 'sub',
+      sizeLimit: 2,
+      attributes: [
+        'displayName',
+        'cn',
+        'userPrincipalName',
+        'mail',
+        'sAMAccountName',
+        'employeeID',
+        'title',
+        'department',
+        'l',
+        'postalCode',
+      ],
+    });
+
+    if (!searchEntries.length) return undefined;
+    if (searchEntries.length > 1) {
+      console.warn(
+        '[AD-LDAP] Más de un objeto con la misma cédula (employeeID); se usa el primero en prechequeo.'
+      );
+    }
+
+    const first = searchEntries[0];
+    const attr = (name) => {
+      const raw = first[name] ?? first[name.toLowerCase()];
+      if (Array.isArray(raw) && raw.length > 0) {
+        const v = raw[0];
+        if (Buffer.isBuffer(v)) return v.toString('utf8');
+        return String(v).trim();
+      }
+      if (typeof raw === 'string') return raw.trim();
+      return '';
+    };
+
+    const displayName = attr('displayName') || attr('cn') || id;
+    return normalizePersonMatchFromLdap(first, attr, displayName);
+  } catch (err) {
+    console.warn(
+      '[AD-LDAP] No se pudo buscar persona por cédula en AD; se omite este paso:',
+      err?.message || err
+    );
+    return undefined;
+  } finally {
+    try {
+      await client.unbind();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 export async function findPersonInActiveDirectoryLdap(displayName) {
   const config = getAdLdapPrecheckConfig();
   if (!config.enabled) return undefined;
@@ -295,6 +373,7 @@ export async function checkExistingPersonByName(params) {
     activeDirectory: null,
     queuePending: null,
     queueProcessed: null,
+    adminQueueHistorical: null,
     queueHistorical: null,
     employeeIdDuplicate: null,
     verificationWarnings: [],
@@ -307,21 +386,8 @@ export async function checkExistingPersonByName(params) {
   const displayName = buildPersonDisplayName(givenName, surname1, surname2);
   const fullSurname = buildPersonFullSurname(surname1, surname2);
 
-  const recentSession = findRecentPersonByDisplayName(displayName);
-  if (recentSession) {
-    return {
-      exists: true,
-      displayName,
-      foundIn: ['queueHistorical'],
-      microsoft365: null,
-      activeDirectory: null,
-      queuePending: null,
-      queueProcessed: null,
-      queueHistorical: recentSession,
-      employeeIdDuplicate: null,
-      verificationWarnings: [],
-    };
-  }
+  const recentAdmin = findRecentPersonByDisplayName(displayName, 'administrativeQueue');
+  const recentOperational = findRecentPersonByDisplayName(displayName, 'operationalM365');
 
   const skipLdapIfGraph =
     process.env.CHECK_EXISTING_PERSON_SKIP_LDAP_IF_GRAPH_MATCH !== 'false';
@@ -366,6 +432,7 @@ export async function checkExistingPersonByName(params) {
     queuePendingByName: null,
     queuePendingByEmployeeId: null,
     queueProcessedByEmployeeId: null,
+    adminQueueHistoricalByName: null,
     queueHistoricalByName: null,
   };
 
@@ -384,11 +451,22 @@ export async function checkExistingPersonByName(params) {
     }
   };
 
-  const [nameGraphResult, idGraphResult, queueResult] = await Promise.all([
-    graphByName(),
-    graphByEmployeeId(),
-    queueLookup(),
-  ]);
+  const ldapByEmployeeId = async () => {
+    if (!employeeId) return { failed: false, match: undefined };
+    try {
+      const match = await findPersonByEmployeeIdInActiveDirectoryLdap(employeeId);
+      return { failed: false, match };
+    } catch (err) {
+      console.warn(
+        '[AD-LDAP] No se pudo consultar duplicado por cédula en AD:',
+        err?.message || err
+      );
+      return { failed: true, match: undefined };
+    }
+  };
+
+  const [nameGraphResult, idGraphResult, queueResult, ldapEmployeeIdResult] =
+    await Promise.all([graphByName(), graphByEmployeeId(), queueLookup(), ldapByEmployeeId()]);
 
   const verificationWarnings = [];
   if (nameGraphResult.failed) {
@@ -404,6 +482,11 @@ export async function checkExistingPersonByName(params) {
   if (queueResult.queueCheckFailed) {
     verificationWarnings.push(
       'No se pudo consultar la cola de Active Directory; revise antes de continuar.'
+    );
+  }
+  if (employeeId && ldapEmployeeIdResult.failed) {
+    verificationWarnings.push(
+      'No se pudo consultar Active Directory por cédula; revise antes de continuar.'
     );
   }
 
@@ -423,15 +506,24 @@ export async function checkExistingPersonByName(params) {
   const queuePending =
     queueResult.queuePendingByName || queueResult.queuePendingByEmployeeId || null;
   const queueProcessed = queueResult.queueProcessedByEmployeeId || null;
-  const queueHistorical = queueResult.queueHistoricalByName || null;
+  const adminQueueHistorical =
+    queueResult.adminQueueHistoricalByName || recentAdmin || null;
+  const queueHistorical =
+    queueResult.queueHistoricalByName || recentOperational || null;
+
+  const ldapEmployeeIdMatch = ldapEmployeeIdResult.match || null;
 
   const employeeIdDuplicate =
     employeeId &&
-    (idGraphResult.match || queueResult.queuePendingByEmployeeId || queueProcessed)
+    (idGraphResult.match ||
+      queueResult.queuePendingByEmployeeId ||
+      queueProcessed ||
+      ldapEmployeeIdMatch)
       ? {
           microsoft365: idGraphResult.match || null,
           queuePending: queueResult.queuePendingByEmployeeId || null,
           queueProcessed: queueProcessed,
+          activeDirectory: ldapEmployeeIdMatch,
         }
       : null;
 
@@ -440,10 +532,12 @@ export async function checkExistingPersonByName(params) {
     activeDirectory ? 'activeDirectory' : '',
     queuePending ? 'queuePending' : '',
     queueProcessed ? 'queueProcessed' : '',
+    adminQueueHistorical ? 'adminQueueHistorical' : '',
     queueHistorical ? 'queueHistorical' : '',
     employeeIdDuplicate?.microsoft365 ? 'employeeIdMicrosoft365' : '',
     employeeIdDuplicate?.queuePending ? 'employeeIdQueuePending' : '',
     employeeIdDuplicate?.queueProcessed ? 'employeeIdQueueProcessed' : '',
+    employeeIdDuplicate?.activeDirectory ? 'employeeIdActiveDirectory' : '',
   ]);
 
   const exists = foundIn.length > 0;
@@ -456,6 +550,7 @@ export async function checkExistingPersonByName(params) {
     activeDirectory,
     queuePending,
     queueProcessed,
+    adminQueueHistorical,
     queueHistorical,
     employeeIdDuplicate,
     verificationWarnings,

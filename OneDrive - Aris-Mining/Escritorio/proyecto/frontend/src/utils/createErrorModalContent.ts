@@ -63,7 +63,7 @@ export function parseCreateErrorForModal(rawMessage: string): CreateErrorModalCo
   }
 
   return {
-    title: 'No se pudo completar el alta',
+    title: 'No se pudo completar la creación',
     body: msg,
   };
 }

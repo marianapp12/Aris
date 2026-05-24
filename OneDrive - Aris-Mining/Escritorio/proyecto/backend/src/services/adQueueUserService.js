@@ -14,7 +14,10 @@ import {
 } from './graphAdministrativePrecheck.js';
 import { pickFirstAvailableSamAndUpnForAdQueue } from './adLdapSamAccountPick.js';
 import { invalidateQueueSamUpnIndexCache } from './operationalAccountAvailability.js';
-import { registerRecentPersonByName } from './operationalPersonRegistry.js';
+import {
+  registerRecentAdministrativeAccount,
+  registerRecentPersonByName,
+} from './operationalPersonRegistry.js';
 import {
   isCandidateSamBlockedByOperationalM365,
   listOperationalM365ReservedSamAccountNames,
@@ -296,7 +299,12 @@ export async function enqueueAdUserUpdateByEmployeeIdRequest(body, graphHint = {
  * Escribe un JSON por solicitud en la UNC configurada (evita pérdidas por concurrencia).
  * @param {object} body - mismo shape que validateAdministrativePayload (givenName, surname1, …)
  */
-export async function enqueueAdUserRequest(body) {
+/**
+ * @param {object} body
+ * @param {{ bulkReservedUpnLower?: Set<string>, bulkReservedSamLower?: Set<string> }} [options]
+ */
+export async function enqueueAdUserRequest(body, options = {}) {
+  const { bulkReservedUpnLower, bulkReservedSamLower } = options;
   const config = assertAdQueueConfigured();
   const requestId = randomUUID();
 
@@ -331,6 +339,8 @@ export async function enqueueAdUserRequest(body) {
         surname1,
         surname2: surname2 || undefined,
         emailDomain: config.emailDomain,
+        bulkReservedUpnLower,
+        bulkReservedSamLower,
       });
       samAccountName = picked.samAccountName;
       userPrincipalName = picked.userPrincipalName;
@@ -361,10 +371,16 @@ export async function enqueueAdUserRequest(body) {
       surname1,
       surname2: surname2 || undefined,
       emailDomain: config.emailDomain,
+      bulkReservedUpnLower,
+      bulkReservedSamLower,
     });
     samAccountName = pickedSkip.samAccountName;
     userPrincipalName = pickedSkip.userPrincipalName;
   }
+
+  registerRecentAdministrativeAccount({ samAccountName, userPrincipalName });
+  bulkReservedUpnLower?.add(userPrincipalName.toLowerCase());
+  bulkReservedSamLower?.add(samAccountName.toLowerCase());
 
   const m365ReservedSamAccountNames = await listOperationalM365ReservedSamAccountNames();
   if (isCandidateSamBlockedByOperationalM365(samAccountName, m365ReservedSamAccountNames)) {
@@ -445,6 +461,7 @@ export async function enqueueAdUserRequest(body) {
       samAccountName,
       userPrincipalName,
       email,
+      registrySource: 'administrativeQueue',
     });
     invalidateQueueSamUpnIndexCache();
   } catch (e) {

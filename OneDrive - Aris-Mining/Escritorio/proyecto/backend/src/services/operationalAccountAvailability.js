@@ -14,6 +14,18 @@ import {
   isCandidateSamBlockedByOperationalM365,
   listOperationalM365ReservedSamAccountNames,
 } from './operationalUpnRegistry.js';
+import { isAdministrativeAccountReservedInMemory } from './operationalPersonRegistry.js';
+
+/**
+ * Cola activa (pendiente/procesando): siempre bloquea el UPN/sAM aunque aún no esté en Graph/LDAP.
+ * @param {OperationalAvailabilityContext} ctx
+ * @param {string} sam
+ * @param {string} userPrincipalName
+ */
+async function isSamOrUpnBlockedInActiveQueue(ctx, sam, userPrincipalName) {
+  if (!ctx?.pendingUnc) return false;
+  return isSamOrUpnReservedInPendingQueue(ctx.pendingUnc, sam, userPrincipalName);
+}
 import {
   bindLdapSamLookupSession,
   isSamAccountNameTakenInLdap,
@@ -118,15 +130,17 @@ function createEmptyQueueIndex() {
     pendingByDisplayName: new Map(),
     pendingByEmployeeId: new Map(),
     processedByEmployeeId: new Map(),
-    /** Altas operativas M365 / resultados AD ya procesados (por nombre para modal de duplicados). */
-    historicalByDisplayName: new Map(),
+    /** Resultados previos en cola AD (resultado-*.json administrativo). */
+    adminHistoricalByDisplayName: new Map(),
+    /** Altas operativas M365 (espejo SMB / resultado-operativo-m365). */
+    operationalHistoricalByDisplayName: new Map(),
   };
 }
 
 /**
  * @param {ReturnType<typeof createEmptyQueueIndex>} index
  * @param {object} data
- * @param {'pending' | 'processed' | 'historical'} scope
+ * @param {'pending' | 'processed' | 'historicalAdmin' | 'historicalOperational'} scope
  */
 function addRecordToPersonLookupIndex(index, data, scope) {
   const match = personMatchFromQueueJson(data);
@@ -136,8 +150,19 @@ function addRecordToPersonLookupIndex(index, data, scope) {
   if (dn && scope === 'pending' && !index.pendingByDisplayName.has(dn)) {
     index.pendingByDisplayName.set(dn, match);
   }
-  if (dn && scope === 'historical' && !index.historicalByDisplayName.has(dn)) {
-    index.historicalByDisplayName.set(dn, match);
+  if (
+    dn &&
+    scope === 'historicalAdmin' &&
+    !index.adminHistoricalByDisplayName.has(dn)
+  ) {
+    index.adminHistoricalByDisplayName.set(dn, match);
+  }
+  if (
+    dn &&
+    scope === 'historicalOperational' &&
+    !index.operationalHistoricalByDisplayName.has(dn)
+  ) {
+    index.operationalHistoricalByDisplayName.set(dn, match);
   }
 
   const eid =
@@ -162,7 +187,7 @@ function addRecordToPersonLookupIndex(index, data, scope) {
  * @param {RegExp} fileRe
  * @param {(data: object, fileName?: string) => boolean} acceptRecord
  * @param {ReturnType<typeof createEmptyQueueIndex>} index
- * @param {'pending' | 'processed' | 'historical' | null} [personScope]
+ * @param {'pending' | 'processed' | 'historicalAdmin' | 'historicalOperational' | null} [personScope]
  */
 async function indexDirSamUpn(dir, fileRe, acceptRecord, index, personScope = null) {
   const root = String(dir || '').trim().replace(/[/\\]+$/g, '');
@@ -242,14 +267,13 @@ async function buildQueueSamUpnIndexFromPaths(paths) {
         RESULTADO_OPERATIVO_M365_RE,
         acceptOperationalM365Mirror,
         index,
-        'historical'
+        'historicalOperational'
       );
     }
     const acceptResultado = (data, fileName = '') => {
       if (
-        !isOperationalM365SmbMirrorEnabled() &&
-        (RESULTADO_OPERATIVO_M365_RE.test(fileName) ||
-          String(data?.source ?? '').trim() === 'operationalM365')
+        RESULTADO_OPERATIVO_M365_RE.test(fileName) ||
+        String(data?.source ?? '').trim() === 'operationalM365'
       ) {
         return false;
       }
@@ -260,7 +284,7 @@ async function buildQueueSamUpnIndexFromPaths(paths) {
       }
       return false;
     };
-    await indexDirSamUpn(resultsPath, RESULTADO_JSON_RE, acceptResultado, index, 'historical');
+    await indexDirSamUpn(resultsPath, RESULTADO_JSON_RE, acceptResultado, index, 'historicalAdmin');
   }
 
   if (processedPath) {
@@ -294,7 +318,8 @@ function isFullQueueSamUpnIndex(index) {
     index.pendingByDisplayName instanceof Map &&
     index.pendingByEmployeeId instanceof Map &&
     index.processedByEmployeeId instanceof Map &&
-    index.historicalByDisplayName instanceof Map
+    index.adminHistoricalByDisplayName instanceof Map &&
+    index.operationalHistoricalByDisplayName instanceof Map
   );
 }
 
@@ -375,6 +400,7 @@ export function emptyQueuePersonLookupResult() {
     queuePendingByName: null,
     queuePendingByEmployeeId: null,
     queueProcessedByEmployeeId: null,
+    adminQueueHistoricalByName: null,
     queueHistoricalByName: null,
   };
 }
@@ -405,7 +431,12 @@ export async function lookupPersonInQueueIndex(params) {
 
   const nameKey = displayName.toLowerCase();
   const pendingByName = nameKey ? index.pendingByDisplayName.get(nameKey) || null : null;
-  const historicalByName = nameKey ? index.historicalByDisplayName.get(nameKey) || null : null;
+  const adminHistoricalByName = nameKey
+    ? index.adminHistoricalByDisplayName.get(nameKey) || null
+    : null;
+  const operationalHistoricalByName = nameKey
+    ? index.operationalHistoricalByDisplayName.get(nameKey) || null
+    : null;
   const pendingByEmployeeId = employeeId
     ? index.pendingByEmployeeId.get(employeeId) || null
     : null;
@@ -417,7 +448,8 @@ export async function lookupPersonInQueueIndex(params) {
     queuePendingByName: pendingByName,
     queuePendingByEmployeeId: pendingByEmployeeId,
     queueProcessedByEmployeeId: processedByEmployeeId,
-    queueHistoricalByName: historicalByName,
+    adminQueueHistoricalByName: adminHistoricalByName,
+    queueHistoricalByName: operationalHistoricalByName,
   };
 }
 
@@ -680,6 +712,17 @@ export async function isProvisioningAccountTaken(
   userPrincipalName,
   options = {}
 ) {
+  if (
+    isOperationalAccountReservedInMemory(sam, userPrincipalName) ||
+    isAdministrativeAccountReservedInMemory(sam, userPrincipalName)
+  ) {
+    return true;
+  }
+
+  if (await isSamOrUpnBlockedInActiveQueue(ctx, sam, userPrincipalName)) {
+    return true;
+  }
+
   const reservedSams =
     options.reservedSams ?? (await listOperationalM365ReservedSamAccountNames());
   if (isCandidateSamBlockedByOperationalM365(sam, reservedSams)) {
@@ -756,6 +799,17 @@ export async function isAdministrativeAccountTaken(
   userPrincipalName,
   options = {}
 ) {
+  if (
+    isOperationalAccountReservedInMemory(sam, userPrincipalName) ||
+    isAdministrativeAccountReservedInMemory(sam, userPrincipalName)
+  ) {
+    return true;
+  }
+
+  if (await isSamOrUpnBlockedInActiveQueue(ctx, sam, userPrincipalName)) {
+    return true;
+  }
+
   const reservedSams =
     options.reservedSams ?? (await listOperationalM365ReservedSamAccountNames());
   if (isCandidateSamBlockedByOperationalM365(sam, reservedSams)) {

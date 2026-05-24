@@ -238,6 +238,9 @@ export const createAdministrativeUsersBulk = async (req, res) => {
 
     const results = [];
     const seenEmployeeIds = new Set();
+    /** UPN/sAM ya asignados en este mismo archivo (evita duplicar correo entre filas). */
+    const bulkReservedUpnLower = new Set();
+    const bulkReservedSamLower = new Set();
     const omitRows = parseOmitRowsSet(req.body?.omitRows);
 
     for (let index = 0; index < rows.length; index++) {
@@ -366,7 +369,10 @@ export const createAdministrativeUsersBulk = async (req, res) => {
 
       try {
         const normalized = normalizeAdministrativeBody(body);
-        const created = await enqueueAdUserRequest(normalized);
+        const created = await enqueueAdUserRequest(normalized, {
+          bulkReservedUpnLower,
+          bulkReservedSamLower,
+        });
         results.push({
           row: rowNumber,
           status: 'success',

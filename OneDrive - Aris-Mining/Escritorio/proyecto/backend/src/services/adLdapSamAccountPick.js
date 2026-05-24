@@ -27,11 +27,21 @@ import {
  *   surname1: string,
  *   surname2?: string,
  *   emailDomain: string,
+ *   bulkReservedUpnLower?: Set<string>,
+ *   bulkReservedSamLower?: Set<string>,
  * }} params
  * @returns {Promise<{ samAccountName: string, userPrincipalName: string }>}
  */
 export async function pickFirstAvailableSamAndUpnForAdQueue(params) {
-  const { graphClient, givenName, surname1, surname2, emailDomain } = params;
+  const {
+    graphClient,
+    givenName,
+    surname1,
+    surname2,
+    emailDomain,
+    bulkReservedUpnLower,
+    bulkReservedSamLower,
+  } = params;
   const domain = String(emailDomain || '').trim();
   if (!domain) {
     throw new Error('Falta emailDomain (AD_QUEUE_EMAIL_DOMAIN)');
@@ -49,6 +59,12 @@ export async function pickFirstAvailableSamAndUpnForAdQueue(params) {
     for (const localPartRaw of iterateLocalPartCandidates(g, s1, s2 || undefined)) {
       const sam = truncateForSamAccountName(localPartRaw);
       const userPrincipalName = `${sam}@${domain}`;
+      const upnKey = userPrincipalName.toLowerCase();
+      const samKey = sam.toLowerCase();
+      if (bulkReservedUpnLower?.has(upnKey) || bulkReservedSamLower?.has(samKey)) {
+        if (!firstRejectedUpn) firstRejectedUpn = userPrincipalName;
+        continue;
+      }
       if (isCandidateSamBlockedByOperationalM365(sam, reservedSams)) {
         if (!firstRejectedUpn) firstRejectedUpn = userPrincipalName;
         continue;

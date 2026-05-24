@@ -5,7 +5,6 @@ Documentación del consumidor de la cola JSON (`pendiente-*.json`) en Active Dir
 ## Contenido
 
 - [Process-AdUserQueue.ps1](#process-aduserqueueps1)
-- [Clear-AdQueueTestArtifacts.ps1 (limpiar JSON de prueba)](#clear-adqueuetestartifactsps1-limpiar-json-de-prueba)
 - [Si la interfaz «tarda ~5 minutos» o más](#si-la-interfaz-tarda-5-minutos-o-más)
 - [Requisitos](#requisitos)
 - [Parámetros del script (resumen)](#parámetros-del-script-resumen)
@@ -40,32 +39,6 @@ Suele indicar un `Process-AdUserQueue.ps1` incompleto o antiguo. Copie el `.ps1`
 ### Error «No se puede llamar a un método en una expresión con valor NULL»
 
 Compruebe que el script incluye `New-M365ReservedSamSetFromQueueItem` y que copió el archivo entero (no un fragmento). Reinicie la tarea programada tras reemplazar `C:\scripts\Process-AdUserQueue.ps1`.
-
-### `Clear-AdQueueTestArtifacts.ps1` (limpiar JSON de prueba)
-
-Borra los archivos de la cola en las carpetas hermanas de `pending` (misma raíz que `AD_QUEUE_UNC` en el backend). **No** elimina usuarios en M365 ni en AD.
-
-| Carpeta | Archivos que elimina |
-|---------|----------------------|
-| `pending` | `pendiente-*.json`, `procesando-*.json`, `.reservado-m365-*.json`, `ok` |
-| `resultados` | `resultado-*.json`, `resultado-operativo-m365-*.json` |
-| `procesados` | `procesado-employeeId-*.json` |
-| `error` | JSON de solicitudes fallidas |
-
-Con la misma raíz que `AD_QUEUE_UNC` en el backend (p. ej. `\\SERVIDOR\scripts\pending`):
-
-```powershell
-# Simulación (solo lista)
-.\Clear-AdQueueTestArtifacts.ps1 -WhatIf
-
-# Borrar de verdad (detenga Process-AdUserQueue un momento si usa -Continuous)
-.\Clear-AdQueueTestArtifacts.ps1 -Force
-
-# Otra raíz
-.\Clear-AdQueueTestArtifacts.ps1 -ScriptsRoot '\\SERVIDOR\scripts' -Force
-```
-
-Tras limpiar: **reinicie el backend** (`npm run dev`) para vaciar reservas M365 en memoria de Node.
 
 ### Si la interfaz “tarda ~5 minutos” o más
 
