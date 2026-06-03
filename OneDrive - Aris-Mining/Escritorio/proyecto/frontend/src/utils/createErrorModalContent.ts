@@ -6,6 +6,40 @@ export interface CreateErrorModalContent {
   hint?: string;
 }
 
+function extractCedulaDuplicateContext(msg: string) {
+  const employeeId = msg.match(/cédula\s*\/\s*ID\s*"([^"]+)"/i)?.[1]?.trim();
+  const asociada =
+    msg.match(/Asociada a:\s*([^.]+)\./i)?.[1]?.trim() ||
+    msg.match(/Active Directory\s*\(([^)]+)\)/i)?.[1]?.trim();
+  const hintMatch = msg.match(/Microsoft 365[^.]*(?:\.|$)/i);
+  return {
+    employeeId,
+    personName: asociada,
+    hint: hintMatch?.[0].replace(/\.$/, ''),
+  };
+}
+
+function buildCedulaDuplicateModal(msg: string): CreateErrorModalContent {
+  const { employeeId, personName, hint } = extractCedulaDuplicateContext(msg);
+  const bodyParts = [
+    employeeId
+      ? `La cédula / ID "${employeeId}" ya está registrada en el sistema.`
+      : 'La cédula / ID ingresada ya está registrada en el sistema.',
+    'No puede dar de alta otra persona con el mismo documento.',
+  ];
+  if (personName) {
+    bodyParts.push(`Está asociada a: ${personName}.`);
+  }
+  return {
+    title: 'Cédula ya registrada',
+    personName,
+    body: bodyParts.join(' '),
+    hint:
+      hint ||
+      'Microsoft 365 puede tardar varios minutos en reflejar la cuenta tras Azure AD Connect.',
+  };
+}
+
 /**
  * Convierte mensajes largos del API en título, cuerpo y nota para el modal.
  */
@@ -19,20 +53,10 @@ export function parseCreateErrorForModal(rawMessage: string): CreateErrorModalCo
   }
 
   if (
-    /ya está en proceso de creación o ya fue creado recientemente en Active Directory/i.test(
-      msg
-    )
+    /cédula\s*\/\s*ID.*ya está registrada/i.test(msg) ||
+    /ya está en proceso de creación o ya fue creado recientemente en Active Directory/i.test(msg)
   ) {
-    const personName = msg.match(/\(([^)]+)\)/)?.[1]?.trim();
-    const hintMatch = msg.match(/Microsoft 365[^.]*(?:\.|$)/i);
-    return {
-      title: 'Usuario ya registrado en Active Directory',
-      personName,
-      body: 'Esta persona ya está en proceso de creación en Active Directory o fue creada hace poco. No se encoló una nueva solicitud con los mismos datos.',
-      hint:
-        hintMatch?.[0].replace(/\.$/, '') ||
-        'Microsoft 365 puede tardar varios minutos en reflejar la cuenta tras Azure AD Connect.',
-    };
+    return buildCedulaDuplicateModal(msg);
   }
 
   if (/Ya hay una solicitud en cola/i.test(msg)) {

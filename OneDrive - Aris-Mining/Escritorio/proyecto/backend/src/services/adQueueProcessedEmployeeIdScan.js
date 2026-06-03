@@ -79,10 +79,10 @@ export async function assertEmployeeIdNotInProcessedRecords(processedBasePath, e
   }
 
   const nombre = data?.nombreCompleto ?? data?.nombre_completo ?? data?.displayName ?? '';
-  const hint = nombre ? ` (${nombre})` : '';
+  const asociada = nombre ? ` Asociada a: ${nombre}.` : '';
   throw new AdministrativePrecheckError(
     PRECHECK_CODES.EMPLOYEE_ID_IN_PROCESSED_RECORDS,
-    `El usuario ya está en proceso de creación o ya fue creado recientemente en Active Directory${hint}. Microsoft 365 puede tardar varios minutos en reflejar la cuenta tras Azure AD Connect.`,
+    `La cédula / ID "${id}" ya está registrada: hay un alta reciente o en proceso en Active Directory.${asociada} No puede crearse otro usuario con el mismo documento. Microsoft 365 puede tardar varios minutos en reflejar la cuenta tras Azure AD Connect.`,
     409
   );
 }

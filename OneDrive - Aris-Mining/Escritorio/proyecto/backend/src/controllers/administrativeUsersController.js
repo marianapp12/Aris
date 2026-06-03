@@ -74,7 +74,7 @@ export const createUserViaAdQueue = async (req, res) => {
               : error.code === 'EMPLOYEE_ID_PENDING_IN_QUEUE'
                 ? 'Cédula con solicitud ya en cola'
                 : error.code === 'EMPLOYEE_ID_IN_PROCESSED_RECORDS'
-                  ? 'Usuario ya registrado en Active Directory (procesados)'
+                  ? 'Cédula ya registrada (procesados)'
                   : error.code === 'EMPLOYEE_ID_AMBIGUOUS'
                     ? 'Cédula / ID ambigua en el directorio'
                     : error.code === 'AD_LDAP_UNAVAILABLE'
